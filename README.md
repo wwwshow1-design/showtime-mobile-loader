@@ -6,7 +6,8 @@
 
 - 고정 진입점은 승인된 전체 Lua가 들어 있는 `mobile/latest.lua`입니다.
 - 승인된 전체 모바일 코드는 `mobile/versions/`에도 동일하게 보관합니다.
-- 새 시험본은 버전 파일로만 추가하며 `mobile/latest.lua`를 변경하지 않습니다.
+- 새 시험본은 항상 고정 주소 `mobile/test.lua`에만 올리며 `mobile/latest.lua`와 `mobile/versions/`를 변경하지 않습니다.
+- `mobile/versions/`에는 사용자 테스트가 끝나 승인된 버전만 보관합니다.
 - 사용자가 정확히 **모바일 최신화해줘**라고 승인한 경우에만 승인된 버전 전체 Lua를 `mobile/latest.lua`에 그대로 복사합니다.
 - 승격할 때 `mobile/latest.lua`와 승인된 버전 파일의 SHA-256 일치를 확인합니다.
 - 모바일 최신화는 `pc/`에 영향을 주지 않습니다.
