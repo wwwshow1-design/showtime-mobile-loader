@@ -11629,7 +11629,7 @@ if MobileUI.Enabled then
         if not Window or not Window.Parent then return end
         local camera = Workspace.CurrentCamera
         local viewport = camera and camera.ViewportSize or Vector2.new(1440, 3040)
-        local parentPosition = Window.Parent:IsA("GuiObject") and Window.Parent.AbsolutePosition or Vector2.new(0, 0)
+        local parentPosition = Window.Parent:IsA("GuiObject") and Window.Parent.AbsolutePosition or Vector2.zero
         local position = Window.AbsolutePosition
         local size = Window.AbsoluteSize
         local margin = 10
@@ -11663,7 +11663,7 @@ if MobileUI.Enabled then
             local target = Drag.StartWindow + delta
             local x = math.clamp(target.X, margin, math.max(margin, viewport.X - size.X - margin))
             local y = math.clamp(target.Y, margin, math.max(margin, viewport.Y - size.Y - margin))
-            local parentPosition = Window.Parent:IsA("GuiObject") and Window.Parent.AbsolutePosition or Vector2.new(0, 0)
+            local parentPosition = Window.Parent:IsA("GuiObject") and Window.Parent.AbsolutePosition or Vector2.zero
             Window.Position = UDim2.fromOffset(x - parentPosition.X, y - parentPosition.Y)
             if OnMoved then OnMoved() end
         end)
@@ -13009,7 +13009,7 @@ if UI.Mobile.Enabled then
 		if not Window or not Window.Parent then return end
 		local Camera = Workspace.CurrentCamera
 		local Viewport = Camera and Camera.ViewportSize or Vector2.new(1440, 3040)
-		local ParentPosition = Window.Parent:IsA("GuiObject") and Window.Parent.AbsolutePosition or Vector2.new(0, 0)
+		local ParentPosition = Window.Parent:IsA("GuiObject") and Window.Parent.AbsolutePosition or Vector2.zero
 		local Position = Window.AbsolutePosition
 		local Size = Window.AbsoluteSize
 		local Margin = 10
@@ -13042,7 +13042,7 @@ if UI.Mobile.Enabled then
 			local Target = Drag.StartWindow + Delta
 			local X = math.clamp(Target.X, Margin, math.max(Margin, Viewport.X - Size.X - Margin))
 			local Y = math.clamp(Target.Y, Margin, math.max(Margin, Viewport.Y - Size.Y - Margin))
-			local ParentPosition = Window.Parent:IsA("GuiObject") and Window.Parent.AbsolutePosition or Vector2.new(0, 0)
+			local ParentPosition = Window.Parent:IsA("GuiObject") and Window.Parent.AbsolutePosition or Vector2.zero
 			Window.Position = UDim2.fromOffset(X - ParentPosition.X, Y - ParentPosition.Y)
 			UI.Mobile[MovedKey] = true
 		end)
