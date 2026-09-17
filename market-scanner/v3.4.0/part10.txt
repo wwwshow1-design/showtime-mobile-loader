@@ -1,0 +1,778 @@
+ent = frame
+
+-- 620x450 창모드에서 실제 게임 콘텐츠 영역(약 620x420)을 기준으로 유지.
+local uiScale = Instance.new("UIScale")
+uiScale.Scale = 1
+uiScale.Parent = frame
+
+local camera = workspace.CurrentCamera
+local function refreshScale()
+    if not camera then
+        uiScale.Scale = 1
+        return
+    end
+    local v = camera.ViewportSize
+    local sx = v.X / 620
+    local sy = v.Y / 420
+    uiScale.Scale = math.min(1, sx, sy)
+end
+refreshScale()
+if camera then
+    trackConnection(camera:GetPropertyChangedSignal("ViewportSize"):Connect(refreshScale))
+end
+
+local function corner(parent, radius)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, radius or 6)
+    c.Parent = parent
+    return c
+end
+
+local function textLabel(parent, txt, pos, size, textSize, bold, color)
+    local t = Instance.new("TextLabel")
+    t.Position = pos
+    t.Size = size
+    t.BackgroundTransparency = 1
+    t.Text = txt or ""
+    t.TextColor3 = color or C.Text
+    t.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+    t.TextSize = textSize or 12
+    t.TextXAlignment = Enum.TextXAlignment.Left
+    t.TextYAlignment = Enum.TextYAlignment.Center
+    t.Parent = parent
+    return t
+end
+
+local function panel(parent, pos, size, bg, radius)
+    local p = Instance.new("Frame")
+    p.Position = pos
+    p.Size = size
+    p.BackgroundColor3 = bg or C.Panel
+    p.BorderSizePixel = 0
+    p.Parent = parent
+    corner(p, radius or 7)
+    return p
+end
+
+local function flatButton(parent, txt, pos, size, bg, hover, callback)
+    local b = Instance.new("TextButton")
+    b.Position = pos
+    b.Size = size
+    b.BackgroundColor3 = bg or C.Button
+    b.BorderSizePixel = 0
+    b.AutoButtonColor = false
+    b.Text = txt or ""
+    b.TextColor3 = C.Text
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 12
+    b.Parent = parent
+    corner(b, 6)
+
+    local baseColor = bg or C.Button
+    local hoverColor = hover or C.ButtonHover
+
+    b.MouseEnter:Connect(function()
+        b.BackgroundColor3 = hoverColor
+    end)
+    b.MouseLeave:Connect(function()
+        b.BackgroundColor3 = baseColor
+    end)
+    if callback then
+        b.MouseButton1Click:Connect(callback)
+    end
+    return b
+end
+
+-- Header
+local title = textLabel(
+    frame,
+    "Military Tycoon 거래소 스캐너",
+    UDim2.fromOffset(12, 5),
+    UDim2.fromOffset(390, 28),
+    15,
+    true,
+    Color3.fromRGB(247, 248, 251)
+)
+title.Active = true
+
+local version = textLabel(
+    frame,
+    "V3.4.0",
+    UDim2.fromOffset(405, 6),
+    UDim2.fromOffset(56, 24),
+    10,
+    false,
+    C.Muted2
+)
+
+local closeButton = flatButton(
+    frame,
+    "×",
+    UDim2.fromOffset(570, 5),
+    UDim2.fromOffset(28, 28),
+    Color3.fromRGB(100, 42, 47),
+    Color3.fromRGB(130, 53, 59),
+    function()
+        cleanupScanner("close")
+    end
+)
+closeButton.TextSize = 17
+
+-- Window drag
+do
+    local dragging = false
+    local dragStart
+    local startPos
+    local dragInput
+
+    local function update(input)
+        if not dragging then return end
+        local delta = input.Position - dragStart
+        frame.Position = UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+    end
+
+    title.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+
+            local changed
+            changed = input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                    if changed then changed:Disconnect() end
+                end
+            end)
+        end
+    end)
+
+    title.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+
+    trackConnection(UserInputService.InputChanged:Connect(function(input)
+        if input == dragInput then
+            update(input)
+        end
+    end))
+end
+
+trackConnection(UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if not gameProcessed and input.KeyCode == Enum.KeyCode.End then
+        cleanupScanner("End")
+    end
+end))
+
+-- Sidebar
+local sidebar = panel(
+    frame,
+    UDim2.fromOffset(8, 40),
+    UDim2.fromOffset(116, 354),
+    C.Sidebar,
+    8
+)
+
+local categoryHeader = textLabel(
+    sidebar,
+    "카테고리",
+    UDim2.fromOffset(10, 7),
+    UDim2.fromOffset(96, 16),
+    10,
+    true,
+    C.Muted
+)
+
+local categoryButtons = {}
+local categoryAccentBars = {}
+local categoryIcons = {}
+
+local sideEntries = {
+    {"All", "전체"},
+    {"Air", "공중"},
+    {"Ground", "지상"},
+    {"Naval", "해군"},
+    {"Drone", "드론"},
+    {"Soldier", "군인"},
+    {"Tool", "무기"},
+    {"Armor", "갑옷"},
+}
+
+local function categoryCount(class)
+    local n = 0
+    for _, item in ipairs(catalog) do
+        if class == "All" or item.class == class then
+            n += 1
+        end
+    end
+    return n
+end
+
+local renderItems
+
+local function paintCategorySelection()
+    for class, b in pairs(categoryButtons) do
+        local selected = (class == currentClass)
+        b.BackgroundColor3 = selected and C.AccentSoft or C.Sidebar
+        categoryAccentBars[class].Visible = selected
+        categoryIcons[class].TextColor3 = selected and Color3.fromRGB(196, 188, 255) or C.Muted2
+    end
+end
+
+local function setCategory(class)
+    currentClass = class
+    currentPage = 1
+    paintCategorySelection()
+    if renderItems then
+        renderItems()
+    end
+end
+
+local menuY = 27
+for _, entry in ipairs(sideEntries) do
+    local class, label = entry[1], entry[2]
+
+    local b = Instance.new("TextButton")
+    b.Position = UDim2.fromOffset(6, menuY)
+    b.Size = UDim2.fromOffset(104, 25)
+    b.BackgroundColor3 = C.Sidebar
+    b.BorderSizePixel = 0
+    b.AutoButtonColor = false
+    b.Text = ""
+    b.Parent = sidebar
+    corner(b, 6)
+
+    local accent = Instance.new("Frame")
+    accent.Position = UDim2.fromOffset(0, 5)
+    accent.Size = UDim2.fromOffset(3, 15)
+    accent.BackgroundColor3 = C.Accent
+    accent.BorderSizePixel = 0
+    accent.Visible = false
+    accent.Parent = b
+    corner(accent, 2)
+
+    local icon = textLabel(
+        b,
+        "•",
+        UDim2.fromOffset(9, 1),
+        UDim2.fromOffset(12, 22),
+        13,
+        true,
+        C.Muted2
+    )
+    icon.TextXAlignment = Enum.TextXAlignment.Center
+
+    local name = textLabel(
+        b,
+        label,
+        UDim2.fromOffset(23, 1),
+        UDim2.fromOffset(48, 22),
+        12,
+        true,
+        C.Text
+    )
+
+    local count = textLabel(
+        b,
+        tostring(categoryCount(class)),
+        UDim2.fromOffset(71, 1),
+        UDim2.fromOffset(27, 22),
+        10,
+        false,
+        C.Muted2
+    )
+    count.TextXAlignment = Enum.TextXAlignment.Right
+
+    b.MouseEnter:Connect(function()
+        if class ~= currentClass then
+            b.BackgroundColor3 = Color3.fromRGB(20, 24, 32)
+        end
+    end)
+    b.MouseLeave:Connect(function()
+        b.BackgroundColor3 = class == currentClass and C.AccentSoft or C.Sidebar
+    end)
+    b.MouseButton1Click:Connect(function()
+        setCategory(class)
+    end)
+
+    categoryButtons[class] = b
+    categoryAccentBars[class] = accent
+    categoryIcons[class] = icon
+    menuY += 27
+end
+
+local divider = Instance.new("Frame")
+divider.Position = UDim2.fromOffset(10, 247)
+divider.Size = UDim2.fromOffset(96, 1)
+divider.BackgroundColor3 = Color3.fromRGB(29, 34, 44)
+divider.BorderSizePixel = 0
+divider.Parent = sidebar
+
+textLabel(
+    sidebar,
+    "관리",
+    UDim2.fromOffset(10, 254),
+    UDim2.fromOffset(96, 16),
+    10,
+    true,
+    C.Muted
+)
+
+local openSelectionManager
+local openSettings
+
+local selectionMenu = flatButton(
+    sidebar,
+    "선택 관리",
+    UDim2.fromOffset(7, 274),
+    UDim2.fromOffset(102, 28),
+    C.Button,
+    C.ButtonHover,
+    function()
+        if openSelectionManager then openSelectionManager() end
+    end
+)
+selectionMenu.TextXAlignment = Enum.TextXAlignment.Left
+selectionMenu.TextSize = 12
+
+local settingsMenu = flatButton(
+    sidebar,
+    "설정",
+    UDim2.fromOffset(7, 306),
+    UDim2.fromOffset(102, 28),
+    C.Button,
+    C.ButtonHover,
+    function()
+        if openSettings then openSettings() end
+    end
+)
+settingsMenu.TextXAlignment = Enum.TextXAlignment.Left
+settingsMenu.TextSize = 12
+
+local sideStatusDot = textLabel(
+    sidebar,
+    "●",
+    UDim2.fromOffset(9, 338),
+    UDim2.fromOffset(12, 12),
+    10,
+    true,
+    C.Muted2
+)
+local sideStatusText = textLabel(
+    sidebar,
+    "정지",
+    UDim2.fromOffset(22, 336),
+    UDim2.fromOffset(82, 15),
+    10,
+    true,
+    C.Muted
+)
+
+-- Main content
+local main = Instance.new("Frame")
+main.Position = UDim2.fromOffset(132, 40)
+main.Size = UDim2.fromOffset(468, 354)
+main.BackgroundTransparency = 1
+main.Parent = frame
+
+-- Compact status cards
+local function makeStatusCard(x, label)
+    local c = panel(
+        main,
+        UDim2.fromOffset(x, 0),
+        UDim2.fromOffset(111, 42),
+        C.Panel,
+        7
+    )
+
+    local l = textLabel(
+        c,
+        label,
+        UDim2.fromOffset(9, 5),
+        UDim2.fromOffset(94, 12),
+        10,
+        false,
+        C.Muted
+    )
+
+    local v = textLabel(
+        c,
+        "-",
+        UDim2.fromOffset(9, 17),
+        UDim2.fromOffset(94, 20),
+        14,
+        true,
+        C.Text
+    )
+
+    return v
+end
+
+local statusValue = makeStatusCard(0, "현재 상태")
+local selectedValue = makeStatusCard(119, "선택 장비")
+local alertValue = makeStatusCard(238, "알림")
+local timeValue = makeStatusCard(357, "실행 시간")
+
+-- Search + run controls
+local searchWrap = panel(
+    main,
+    UDim2.fromOffset(0, 50),
+    UDim2.fromOffset(248, 28),
+    C.Input,
+    6
+)
+
+local searchIcon = textLabel(
+    searchWrap,
+    "⌕",
+    UDim2.fromOffset(8, 1),
+    UDim2.fromOffset(18, 26),
+    13,
+    false,
+    C.Muted2
+)
+searchIcon.TextXAlignment = Enum.TextXAlignment.Center
+
+local searchBox = Instance.new("TextBox")
+searchBox.Position = UDim2.fromOffset(29, 0)
+searchBox.Size = UDim2.fromOffset(211, 28)
+searchBox.BackgroundTransparency = 1
+searchBox.BorderSizePixel = 0
+searchBox.ClearTextOnFocus = false
+searchBox.Text = ""
+searchBox.PlaceholderText = "장비 검색 · 한글 / 영문 / ID"
+searchBox.PlaceholderColor3 = C.Muted2
+searchBox.TextColor3 = C.Text
+searchBox.Font = Enum.Font.Gotham
+searchBox.TextSize = 12
+searchBox.TextXAlignment = Enum.TextXAlignment.Left
+searchBox.Parent = searchWrap
+
+local startBtn = flatButton(
+    main,
+    "▶ 시작",
+    UDim2.fromOffset(254, 50),
+    UDim2.fromOffset(60, 28),
+    C.Green,
+    C.GreenHover,
+    function()
+        startScanner("manual")
+    end
+)
+
+local stopBtn = flatButton(
+    main,
+    "■ 정지",
+    UDim2.fromOffset(320, 50),
+    UDim2.fromOffset(60, 28),
+    C.Red,
+    C.RedHover,
+    function()
+        stopScanner()
+    end
+)
+
+local manageBtn = flatButton(
+    main,
+    "선택 관리",
+    UDim2.fromOffset(386, 50),
+    UDim2.fromOffset(82, 28),
+    C.Button,
+    C.ButtonHover,
+    function()
+        if openSelectionManager then openSelectionManager() end
+    end
+)
+
+-- Equipment list
+local listPanel = panel(
+    main,
+    UDim2.fromOffset(0, 84),
+    UDim2.fromOffset(468, 156),
+    C.Panel,
+    7
+)
+
+local listTitle = textLabel(
+    listPanel,
+    "장비 목록",
+    UDim2.fromOffset(9, 5),
+    UDim2.fromOffset(150, 18),
+    12,
+    true,
+    C.Text
+)
+
+local pageInfo = textLabel(
+    listPanel,
+    "",
+    UDim2.fromOffset(183, 5),
+    UDim2.fromOffset(276, 18),
+    10,
+    false,
+    C.Muted
+)
+pageInfo.TextXAlignment = Enum.TextXAlignment.Right
+
+local cardArea = Instance.new("Frame")
+cardArea.Position = UDim2.fromOffset(6, 28)
+cardArea.Size = UDim2.fromOffset(456, 122)
+cardArea.BackgroundTransparency = 1
+cardArea.Parent = listPanel
+
+local grid = Instance.new("UIGridLayout")
+grid.FillDirection = Enum.FillDirection.Horizontal
+grid.FillDirectionMaxCells = 3
+grid.SortOrder = Enum.SortOrder.LayoutOrder
+grid.CellPadding = UDim2.fromOffset(6, 5)
+grid.CellSize = UDim2.new(1/3, -4, 0, 37)
+grid.Parent = cardArea
+
+local itemButtons = {}
+local ITEMS_PER_PAGE_V32 = 9
+
+local function clearItemButtons()
+    for _, b in ipairs(itemButtons) do
+        pcall(function() b:Destroy() end)
+    end
+    itemButtons = {}
+end
+
+local function refreshFiltered()
+    filteredItems = {}
+    local q = normalizeSearchText(currentSearch)
+
+    for _, item in ipairs(catalog) do
+        if currentClass == "All" or item.class == currentClass then
+            local hay = normalizeSearchText(
+                tostring(item.ko) .. " "
+                .. tostring(item.name) .. " "
+                .. tostring(item.id)
+            )
+
+            if q == "" or string.find(hay, q, 1, true) then
+                filteredItems[#filteredItems + 1] = item
+            end
+        end
+    end
+
+    table.sort(filteredItems, function(a, b)
+        return string.lower(a.ko) < string.lower(b.ko)
+    end)
+
+    local maxPage = math.max(1, math.ceil(#filteredItems / ITEMS_PER_PAGE_V32))
+    currentPage = math.clamp(currentPage, 1, maxPage)
+end
+
+local function makeItemCard(item, order)
+    local selected = config.Selected[item.key] == true
+
+    local b = Instance.new("TextButton")
+    b.LayoutOrder = order
+    b.BackgroundColor3 = selected and C.CardSelected or C.Card
+    b.BorderSizePixel = 0
+    b.AutoButtonColor = false
+    b.Text = ""
+    b.Parent = cardArea
+    corner(b, 6)
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = C.Accent
+    stroke.Thickness = 1
+    stroke.Transparency = selected and 0.2 or 1
+    stroke.Parent = b
+
+    local accent = Instance.new("Frame")
+    accent.Position = UDim2.fromOffset(0, 5)
+    accent.Size = UDim2.fromOffset(3, 27)
+    accent.BackgroundColor3 = C.Accent
+    accent.BorderSizePixel = 0
+    accent.Visible = selected
+    accent.Parent = b
+    corner(accent, 2)
+
+    local check = textLabel(
+        b,
+        selected and "✓" or "",
+        UDim2.new(1, -21, 0, 4),
+        UDim2.fromOffset(15, 14),
+        12,
+        true,
+        Color3.fromRGB(194, 186, 255)
+    )
+    check.TextXAlignment = Enum.TextXAlignment.Center
+
+    local ko = textLabel(
+        b,
+        tostring(item.ko),
+        UDim2.fromOffset(8, 3),
+        UDim2.new(1, -30, 0, 15),
+        12,
+        true,
+        C.Text
+    )
+    ko.TextTruncate = Enum.TextTruncate.AtEnd
+
+    local en = textLabel(
+        b,
+        tostring(item.name),
+        UDim2.fromOffset(8, 18),
+        UDim2.new(1, -16, 0, 13),
+        10,
+        false,
+        C.Muted
+    )
+    en.TextTruncate = Enum.TextTruncate.AtEnd
+
+    b.MouseEnter:Connect(function()
+        b.BackgroundColor3 = selected
+            and Color3.fromRGB(46, 41, 79)
+            or C.CardHover
+    end)
+
+    b.MouseLeave:Connect(function()
+        b.BackgroundColor3 = selected and C.CardSelected or C.Card
+    end)
+
+    b.MouseButton1Click:Connect(function()
+        local newSelected = not selected
+        config.Selected[item.key] = newSelected and true or nil
+        if newSelected then
+            addToScanOrder(item.key)
+        else
+            removeFromScanOrder(item.key)
+        end
+        scheduleConfigSave("장비 선택 변경")
+        renderItems()
+    end)
+
+    itemButtons[#itemButtons + 1] = b
+end
+
+renderItems = function()
+    clearItemButtons()
+    refreshFiltered()
+    paintCategorySelection()
+
+    local maxPage = math.max(1, math.ceil(#filteredItems / ITEMS_PER_PAGE_V32))
+    pageInfo.Text =
+        "총 " .. tostring(#filteredItems)
+        .. "개   |   " .. tostring(currentPage)
+        .. " / " .. tostring(maxPage) .. " 페이지"
+
+    local startIndex = (currentPage - 1) * ITEMS_PER_PAGE_V32 + 1
+    for i = 0, ITEMS_PER_PAGE_V32 - 1 do
+        local item = filteredItems[startIndex + i]
+        if item then
+            makeItemCard(item, i + 1)
+        end
+    end
+end
+
+searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+    currentSearch = searchBox.Text or ""
+    currentPage = 1
+    renderItems()
+end)
+
+-- Compact page controls
+local prevBtn = flatButton(
+    main,
+    "‹ 이전",
+    UDim2.fromOffset(0, 246),
+    UDim2.fromOffset(58, 26),
+    C.Button,
+    C.ButtonHover,
+    function()
+        currentPage = math.max(1, currentPage - 1)
+        renderItems()
+    end
+)
+
+local compactPage = textLabel(
+    main,
+    "",
+    UDim2.fromOffset(62, 246),
+    UDim2.fromOffset(74, 26),
+    10,
+    true,
+    C.Muted
+)
+compactPage.TextXAlignment = Enum.TextXAlignment.Center
+
+local nextBtn = flatButton(
+    main,
+    "다음 ›",
+    UDim2.fromOffset(140, 246),
+    UDim2.fromOffset(58, 26),
+    C.Button,
+    C.ButtonHover,
+    function()
+        currentPage += 1
+        renderItems()
+    end
+)
+
+local selectAllBtn = flatButton(
+    main,
+    "현재 탭 전체선택",
+    UDim2.fromOffset(222, 246),
+    UDim2.fromOffset(94, 26),
+    C.Button,
+    C.ButtonHover,
+    function()
+        for _, item in ipairs(catalog) do
+            if currentClass == "All" or item.class == currentClass then
+                config.Selected[item.key] = true
+                addToScanOrder(item.key)
+            end
+        end
+        scheduleConfigSave("현재 탭 전체선택")
+        renderItems()
+    end
+)
+selectAllBtn.TextSize = 11
+selectAllBtn.TextTruncate = Enum.TextTruncate.AtEnd
+
+local clearAllBtn = flatButton(
+    main,
+    "전체해제",
+    UDim2.fromOffset(322, 246),
+    UDim2.fromOffset(68, 26),
+    C.Button,
+    C.ButtonHover,
+    function()
+        for _, item in ipairs(catalog) do
+            if currentClass == "All" or item.class == currentClass then
+                config.Selected[item.key] = nil
+                removeFromScanOrder(item.key)
+            end
+        end
+        scheduleConfigSave("현재 탭 전체해제")
+        renderItems()
+    end
+)
+
+local refreshBtn = flatButton(
+    main,
+    "새로고침",
+    UDim2.fromOffset(396, 246),
+    UDim2.fromOffset(72, 26),
+    C.Button,
+    C.ButtonHover,
+    function()
+        renderItems()
+    end
+)
+
+-- Log panel
+local logPanel = p
