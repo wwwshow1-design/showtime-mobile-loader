@@ -1,0 +1,524 @@
+le|798","name":"Vulcan","id":"Vulcan","class":"Vehicle","ko":"Vulcan","limited":false,"rarity":"Legendary","starred":false},{"key":"Vehicle|805","name":"War ship","id":"Warship1","class":"Vehicle","ko":"War ship","limited":false,"rarity":"Legendary","starred":false},{"key":"Vehicle|801","name":"War Shrike","id":"WarShrike","class":"Vehicle","ko":"War Shrike","limited":false,"rarity":"Legendary","starred":false},{"key":"Vehicle|803","name":"Warmaul","id":"Warmaul","class":"Vehicle","ko":"Warmaul","limited":false,"rarity":"Legendary","starred":false},{"key":"Vehicle|804","name":"Warplane","id":"Warplane","class":"Vehicle","ko":"Warplane","limited":false,"rarity":"Rare","starred":false},{"key":"Vehicle|806","name":"Warspite","id":"Warspite","class":"Vehicle","ko":"Warspite","limited":false,"rarity":"Exotic","starred":false},{"key":"Vehicle|807","name":"Weiner Wagon","id":"WeinerWagon","class":"Vehicle","ko":"Weiner Wagon","limited":false,"rarity":"Legendary","starred":false},{"key":"Vehicle|809","name":"Werewolf Tank","id":"WerewolfTank","class":"Vehicle","ko":"Werewolf 탱크","limited":false,"rarity":"Special","starred":false},{"key":"Vehicle|814","name":"Wulf","id":"Wulf","class":"Vehicle","ko":"Wulf","limited":false,"rarity":"Legendary","starred":false},{"key":"Vehicle|815","name":"X59","id":"X59","class":"Vehicle","ko":"X59","limited":false,"rarity":"Legendary","starred":false},{"key":"Vehicle|816","name":"XB-70","id":"XB70","class":"Vehicle","ko":"XB-70","limited":false,"rarity":"Legendary","starred":false},{"key":"Vehicle|817","name":"XF12","id":"XF12","class":"Vehicle","ko":"XF12","limited":false,"rarity":"Exotic","starred":false},{"key":"Vehicle|820","name":"Yamato","id":"Yamato","class":"Vehicle","ko":"Yamato","limited":false,"rarity":"Epic","starred":false},{"key":"Vehicle|819","name":"YF-23","id":"YF23","class":"Vehicle","ko":"YF-23","limited":false,"rarity":"Rare","starred":false},{"key":"Vehicle|818","name":"YF1","id":"YF1","class":"Vehicle","ko":"YF1","limited":false,"rarity":"Legendary","starred":false},{"key":"Vehicle|822","name":"Zeplin-X","id":"ZeplinX","class":"Vehicle","ko":"Zeplin-X","limited":false,"rarity":"Legendary","starred":false},{"key":"Vehicle|470","name":"Zeplin-X Nuke","id":"NukeZeplinX","class":"Vehicle","ko":"Zeplin-X Nuke","limited":false,"rarity":"Exotic","starred":false},{"key":"Vehicle|823","name":"Zhi 19E","id":"Zhi_19E","class":"Vehicle","ko":"Zhi 19E","limited":false,"rarity":"Exotic","starred":false},{"key":"Vehicle|826","name":"Zombie AC130","id":"ZombieAC130","class":"Vehicle","ko":"Zombie AC130","limited":false,"rarity":"Legendary","starred":false},{"key":"Vehicle|827","name":"Zubr","id":"ZubrHovercraft","class":"Vehicle","ko":"Zubr","limited":false,"rarity":"Legendary","starred":false},{"key":"Vehicle|828","name":"Zumwalt","id":"Zumwalt","class":"Vehicle","ko":"Zumwalt","limited":false,"rarity":"Legendary","starred":false},{"key":"Vehicle|829","name":"Zumwalt X","id":"ZumwaltX","class":"Vehicle","ko":"Zumwalt X","limited":false,"rarity":"Special","starred":false}]
+]==]
+
+local playerGui = player:WaitForChild("PlayerGui", 30)
+if not playerGui then return end
+
+local previousController = sharedEnvironment[GLOBAL_CONTROLLER_KEY]
+if type(previousController) == "table" and type(previousController.Cleanup) == "function" then
+    pcall(previousController.Cleanup, "reload")
+end
+
+-- V3.3.2 이하는 전역 cleanup 소유권이 없어서 GUI만 지우면 기존 loop가 숨어서 남는다.
+-- 첫 V3.3.3 실행 때 구버전 창이 열려 있으면 자동 파괴하지 않고 안전하게 실행을 거부한다.
+for _, legacyName in ipairs({
+    "MarketSelectedScannerGui",
+    "MarketSelectedScannerGuiV3",
+    "MarketSelectedScannerGuiV32",
+    "MarketSelectedScannerGuiV33",
+    "MarketSelectedScannerGuiV333",
+    "MarketSelectedScannerGuiV334",
+    "MarketSelectedScannerGuiV340",
+}) do
+    if playerGui:FindFirstChild(legacyName) then
+        warn(
+            "[V3.4.0] 기존 스캐너 창이 열려 있습니다. "
+                .. "기존 창의 X를 눌러 종료한 뒤 V3.4.0을 다시 실행해 주세요."
+        )
+        return
+    end
+end
+
+local lifecycle = {
+    Closed = false,
+    Connections = {},
+    Cleanup = nil,
+    AfkConnection = nil,
+}
+sharedEnvironment[GLOBAL_CONTROLLER_KEY] = lifecycle
+
+local gui
+
+local function trackConnection(connection)
+    if connection then
+        lifecycle.Connections[#lifecycle.Connections + 1] = connection
+    end
+    return connection
+end
+
+local catalog = HttpService:JSONDecode(CATALOG_JSON)
+
+-- catalog 생성 후에 차량 분류/한글화를 적용해야 함.
+-- V2.3에서는 이 코드가 catalog 생성보다 먼저 실행돼 nil 오류가 났음.
+for _, item in ipairs(catalog) do
+    if item.class == "Vehicle" then
+        item.class = classifyVehicle(item)
+    end
+    item.ko, item.koSource = koreanize(item.name, item.ko)
+end
+
+local itemByKey = {}
+for _, item in ipairs(catalog) do
+    itemByKey[item.key] = item
+end
+
+local config = {
+    WebhookUrl = "",
+    UrgentWebhookUrl = "",
+    UrgentPrice = 350000,
+    ItemUrgentPrices = {},
+    Selected = {},
+    StarFilters = {},
+    ScanOrder = {},
+    StockReminderMinutes = DEFAULT_STOCK_REMINDER_MINUTES,
+    DetailedLogs = true,
+    LowResourceMode = true,
+    AfkKeepAlive = true,
+    AutoStartScanner = true,
+}
+
+local configNeedsMigration = false
+
+-- 기존 핵심 3종은 첫 실행 기본 선택
+local DEFAULT_NAMES = {
+    ["Super Ace Pilot"] = true,
+    ["Air Commander"] = true,
+    ["Super Repair Drone"] = true,
+}
+
+local state = {
+    running = false,
+    startPending = false,
+    stopRequested = false,
+    service = nil,
+    serviceLoading = false,
+    lastServiceError = "",
+    cycle = 0,
+    scans = 0,           -- 스캔 조건 수
+    remoteCalls = 0,     -- 실제 FindItem 호출 횟수
+    finds = 0,
+    alerts = 0,
+    urgentAlerts = 0,
+    stockReminders = 0,
+    duplicates = 0,
+    errors = 0,
+    rawMismatches = 0,
+    current = "대기",
+    lastError = "",
+    startedAt = nil,
+    seen = {},
+    seenOrder = {},
+    seenSerial = 0,
+    logs = {},
+    findItemHookInstalled = false,
+    originalFindItem = nil,
+    hookedFindItem = nil,
+    scannerCallThread = nil,
+    observedUiCalls = 0,
+    cooldownResponses = 0,
+    nextQueryAt = 0,
+    healthyQueries = 0,
+    consecutiveFailures = 0,
+    failureStartedAt = nil,
+    healthAlertAt = {},
+}
+
+local guiRefs = {}
+local currentClass = "All"
+local currentPage = 1
+local currentSearch = ""
+local filteredItems = {}
+
+local function comma(n)
+    n = tonumber(n)
+    if not n then return "?" end
+    local s = tostring(math.floor(n))
+    while true do
+        local new, count = s:gsub("^(-?%d+)(%d%d%d)", "%1,%2")
+        s = new
+        if count == 0 then break end
+    end
+    return s
+end
+
+local function safeFind(root, ...)
+    local cur = root
+    for i = 1, select("#", ...) do
+        if not cur then return nil end
+        local childName = select(i, ...)
+        if type(childName) ~= "string" then return nil end
+        cur = cur:FindFirstChild(childName)
+    end
+    return cur
+end
+
+local function saveConfig()
+    if type(writefile) ~= "function" then
+        return false, "파일 저장 기능(writefile)을 찾지 못했습니다."
+    end
+    local ok, err = pcall(function()
+        writefile(CONFIG_FILE, HttpService:JSONEncode(config))
+    end)
+    return ok, ok and "설정 저장 완료" or tostring(err)
+end
+
+local function loadConfig()
+    if type(isfile) ~= "function" or type(readfile) ~= "function" then
+        return false
+    end
+    local okExists, exists = pcall(isfile, CONFIG_FILE)
+    if not okExists or not exists then
+        return false
+    end
+    local ok, decoded = pcall(function()
+        return HttpService:JSONDecode(readfile(CONFIG_FILE))
+    end)
+    if not ok or type(decoded) ~= "table" then
+        return false
+    end
+
+    if type(decoded.WebhookUrl) == "string" then
+        config.WebhookUrl = decoded.WebhookUrl
+    end
+    if type(decoded.UrgentWebhookUrl) == "string" then
+        config.UrgentWebhookUrl = decoded.UrgentWebhookUrl
+    else
+        configNeedsMigration = true
+    end
+    if tonumber(decoded.UrgentPrice) then
+        config.UrgentPrice = math.max(0, math.floor(tonumber(decoded.UrgentPrice)))
+    end
+    if type(decoded.ItemUrgentPrices) == "table" then
+        config.ItemUrgentPrices = decoded.ItemUrgentPrices
+    else
+        configNeedsMigration = true
+    end
+    if type(decoded.Selected) == "table" then
+        config.Selected = decoded.Selected
+    end
+    if type(decoded.StarFilters) == "table" then
+        config.StarFilters = decoded.StarFilters
+    else
+        configNeedsMigration = true
+    end
+    if type(decoded.ScanOrder) == "table" then
+        config.ScanOrder = decoded.ScanOrder
+    else
+        configNeedsMigration = true
+    end
+    if tonumber(decoded.StockReminderMinutes) then
+        config.StockReminderMinutes = math.max(0, math.floor(tonumber(decoded.StockReminderMinutes)))
+    else
+        configNeedsMigration = true
+    end
+    if type(decoded.DetailedLogs) == "boolean" then
+        config.DetailedLogs = decoded.DetailedLogs
+    end
+    if type(decoded.LowResourceMode) == "boolean" then
+        config.LowResourceMode = decoded.LowResourceMode
+    else
+        config.LowResourceMode = true
+        configNeedsMigration = true
+    end
+    if type(decoded.AfkKeepAlive) == "boolean" then
+        config.AfkKeepAlive = decoded.AfkKeepAlive
+    else
+        config.AfkKeepAlive = true
+        configNeedsMigration = true
+    end
+    if type(decoded.AutoStartScanner) == "boolean" then
+        config.AutoStartScanner = decoded.AutoStartScanner
+    else
+        config.AutoStartScanner = true
+        configNeedsMigration = true
+    end
+    return true
+end
+
+local loaded = loadConfig()
+if not loaded then
+    configNeedsMigration = true
+    for _, item in ipairs(catalog) do
+        if DEFAULT_NAMES[item.name] then
+            config.Selected[item.key] = true
+        end
+    end
+end
+
+local function getRequestFunction()
+    if type(request) == "function" then return request end
+    if type(http_request) == "function" then return http_request end
+    if type(syn) == "table" and type(syn.request) == "function" then return syn.request end
+    return nil
+end
+
+local function sendWebhookPayloadTo(url, payload, emptyMessage)
+    if type(url) ~= "string" or url:gsub("%s", "") == "" then
+        return false, emptyMessage or "Discord Webhook URL이 비어 있습니다."
+    end
+    local req = getRequestFunction()
+    if not req then
+        return false, "HTTP request 기능을 찾지 못했습니다."
+    end
+
+    local ok, response = pcall(function()
+        return req({
+            Url = url,
+            Method = "POST",
+            Headers = {["Content-Type"]="application/json"},
+            Body = HttpService:JSONEncode(payload),
+        })
+    end)
+    if not ok then
+        return false, tostring(response)
+    end
+
+    local code = tonumber(response and (response.StatusCode or response.Status or response.status_code))
+    if code and code >= 200 and code < 300 then
+        return true, "전송 성공"
+    end
+    if code == nil and response ~= nil then
+        return true, "전송 요청 완료"
+    end
+    return false, "Discord 응답 코드: " .. tostring(code)
+end
+
+local function sendWebhookPayload(payload)
+    return sendWebhookPayloadTo(
+        config.WebhookUrl,
+        payload,
+        "일반 Discord Webhook URL이 비어 있습니다."
+    )
+end
+
+local function sendUrgentWebhookPayload(payload)
+    return sendWebhookPayloadTo(
+        config.UrgentWebhookUrl,
+        payload,
+        "긴급 Webhook URL이 비어 있습니다."
+    )
+end
+
+local function buildJoinUrl(jobId)
+    if type(jobId) ~= "string" or jobId == "" then return nil end
+    return "https://www.roblox.com/games/start?placeId="
+        .. tostring(TRADE_PLACE_ID)
+        .. "&gameInstanceId=" .. jobId
+end
+
+local function waitForTerminalService()
+    if state.service then
+        return state.service, nil
+    end
+
+    if state.serviceLoading then
+        local sharedDeadline = os.clock() + SERVICE_TIMEOUT
+        while state.serviceLoading and os.clock() < sharedDeadline and not state.stopRequested do
+            task.wait(0.1)
+        end
+        if state.service then
+            return state.service, nil
+        end
+        return nil, state.lastServiceError ~= ""
+            and state.lastServiceError
+            or "TerminalService 공동 대기 시간 초과"
+    end
+
+    state.serviceLoading = true
+    local knitModule = safeFind(
+        ReplicatedStorage, "Packages", "_Index",
+        "sleitnick_knit@1.5.1", "knit"
+    )
+    if not knitModule then
+        state.serviceLoading = false
+        state.lastServiceError = "Knit 모듈 경로를 찾지 못했습니다."
+        return nil, "Knit 모듈 경로를 찾지 못했습니다."
+    end
+
+    local okRequire, Knit = pcall(require, knitModule)
+    if not okRequire or type(Knit) ~= "table" then
+        state.serviceLoading = false
+        state.lastServiceError = "Knit 모듈을 불러오지 못했습니다."
+        return nil, "Knit 모듈을 불러오지 못했습니다."
+    end
+
+    local deadline = os.clock() + SERVICE_TIMEOUT
+    local lastErr = ""
+    while os.clock() < deadline and not state.stopRequested and not lifecycle.Closed do
+        local ok, serviceOrErr = pcall(function()
+            return Knit.GetService("TerminalService")
+        end)
+        if ok and serviceOrErr then
+            state.service = serviceOrErr
+            state.serviceLoading = false
+            state.lastServiceError = ""
+            return serviceOrErr, nil
+        end
+        lastErr = tostring(serviceOrErr)
+        task.wait(0.5)
+    end
+    state.serviceLoading = false
+
+    if state.stopRequested or lifecycle.Closed then
+        state.lastServiceError = "정지 요청"
+        return nil, state.lastServiceError
+    end
+
+    state.lastServiceError = "TerminalService 준비 시간 초과: " .. lastErr
+    return nil, state.lastServiceError
+end
+
+
+local LOG_LIMIT = 200
+
+local function addLog(kind, message)
+    state.logs = state.logs or {}
+    table.insert(state.logs, 1, {
+        at = os.date("%H:%M:%S"),
+        kind = tostring(kind or "INFO"),
+        message = tostring(message or ""),
+    })
+
+    while #state.logs > LOG_LIMIT do
+        table.remove(state.logs)
+    end
+end
+
+local function detailLog(kind, message)
+    if config.DetailedLogs then
+        addLog(kind, message)
+    end
+end
+
+local configSaveState = {
+    revision = 0,
+    pending = false,
+}
+
+local function performConfigSave(context)
+    local ok, message = saveConfig()
+    if not ok then
+        addLog(
+            "ERROR",
+            "설정 자동 저장 실패"
+                .. (context and (" | " .. tostring(context)) or "")
+                .. " | " .. tostring(message)
+        )
+    end
+    return ok
+end
+
+local function scheduleConfigSave(context)
+    configSaveState.revision += 1
+    configSaveState.pending = true
+    local requestedRevision = configSaveState.revision
+
+    task.delay(CONFIG_SAVE_DEBOUNCE, function()
+        if lifecycle.Closed
+            or not configSaveState.pending
+            or requestedRevision ~= configSaveState.revision then
+            return
+        end
+
+        configSaveState.pending = false
+        performConfigSave(context or "debounce")
+    end)
+end
+
+local function flushConfigSave(context)
+    if not configSaveState.pending then
+        return true
+    end
+
+    configSaveState.revision += 1
+    configSaveState.pending = false
+    return performConfigSave(context or "cleanup")
+end
+
+-- 같은 executor 안에서 재실행해도 최초 실행 전 값을 잃지 않도록 공유한다.
+local PERFORMANCE_BASELINE_KEY = "__MarketSelectedScannerPerformanceBaseline"
+
+local function getPerformanceBaseline()
+    local existing = sharedEnvironment[PERFORMANCE_BASELINE_KEY]
+    if type(existing) == "table" then
+        return existing
+    end
+
+    local baseline = {
+        fpsCaptured = false,
+        fpsCap = nil,
+        qualityCaptured = false,
+        qualityLevel = nil,
+    }
+
+    if type(getfpscap) == "function" then
+        local okFps, fpsCap = pcall(getfpscap)
+        if okFps and type(fpsCap) == "number" and fpsCap > 0 then
+            baseline.fpsCaptured = true
+            baseline.fpsCap = fpsCap
+        end
+    end
+
+    local okQuality, qualityLevel = pcall(function()
+        return settings().Rendering.QualityLevel
+    end)
+    if okQuality and qualityLevel ~= nil then
+        baseline.qualityCaptured = true
+        baseline.qualityLevel = qualityLevel
+    end
+
+    sharedEnvironment[PERFORMANCE_BASELINE_KEY] = baseline
+    return baseline
+end
+
+local performanceBaseline = getPerformanceBaseline()
+
+local function applyLowResourceMode(enabled)
+    if enabled then
+        sharedEnvironment[PERFORMANCE_BASELINE_KEY] = performanceBaseline
+
+        local fpsSupported = type(setfpscap) == "function"
+        local fpsApplied = false
+        if fpsSupported then
+            fpsApplied = pcall(setfpscap, LOW_RESOURCE_FPS)
+        end
+
+        local graphicsApplied = pcall(function()
+            settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+        end)
+
+        local renderingApplied = pcall(function()
+            RunService:Set3dRenderingEnabled(false)
+        end)
+
+        if fpsApplied and graphicsApplied and renderingApplied then
+            addLog(
+                "PERF",
+                "저사양 조사 모드 ON | FPS " .. tostring(LOW_RESOURCE_FPS)
+                    .. " | 그래픽 Level01 | 3D 렌더링 OFF"
+            )
+        elseif not fpsSupported and graphicsApplied and renderingApplied then
+            addLog("PERF", "FPS 제한 API 미지원 | 그래픽 Level01 | 3D 렌더링 OFF")
+        else
+            local fpsText = fpsApplied and ("FPS " .. tostring(LOW_RESOURCE_FPS))
+                or (fpsSupported and "FPS 제한 적용 실패" or "FPS 제한 API 미지원")
+            local graphicsText = graphicsApplied and "그래픽 Level01"
+                or "그래픽 최저 적용 실패"
+            local renderingText = renderingApplied and "3D 렌더링 OFF"
+                or "3D 렌더링 비활성화 기능 미지원"
+            addLog(
+                "PERF",
+                "저사양 조사 모드 ON | " .. fpsText
+                    .. " | " .. graphicsText .. " | " .. renderingText
+            )
+        end
+        return
+    end
+
+    local fpsRestoreText
+    local fpsRestoreComplete = not performanceBaseline.fpsCaptured
+    if type(setfpscap) ~= "function" then
+        fpsRestoreText = "FPS 복원 API 미지원"
+    elseif performanceBaseline.fpsCaptured then
+        local okFpsRestore = pcall(setfpscap, performanceBaseline.fpsCap)
+   
