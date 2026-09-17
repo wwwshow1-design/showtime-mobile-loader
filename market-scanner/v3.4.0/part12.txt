@@ -1,0 +1,537 @@
+ 조사 모드 변경")
+    end)
+    makeToggle("AFK 유지", 8, 186, config.AfkKeepAlive ~= false, function(value)
+        config.AfkKeepAlive = value
+        applyAfkKeepAlive(value)
+        scheduleConfigSave("AFK 유지 변경")
+    end)
+    makeToggle("자동 스캔 시작", 212, 186, config.AutoStartScanner ~= false, function(value)
+        config.AutoStartScanner = value
+        scheduleConfigSave("자동 스캔 시작 변경")
+    end)
+
+    local note = textLabel(
+        scroll,
+        "재고 알림 0분 = OFF · 긴급가는 선택관리에서 장비별로 덮어쓸 수 있습니다.",
+        UDim2.fromOffset(8, 228), UDim2.fromOffset(384, 40), 10, false, C.Muted2
+    )
+    note.TextWrapped = true
+    note.ZIndex = 83
+end
+
+-- Selection manager popup: same add/remove functionality, polished layout.
+openSelectionManager = function()
+    local dim, p = makeOverlay("SelectionPopup", 510, 304)
+
+    local t = textLabel(
+        p,
+        "선택 장비 관리",
+        UDim2.fromOffset(14, 9),
+        UDim2.fromOffset(280, 24),
+        14,
+        true,
+        C.Text
+    )
+    t.ZIndex = 82
+
+    local summary = textLabel(
+        p,
+        "",
+        UDim2.fromOffset(295, 10),
+        UDim2.fromOffset(165, 22),
+        10,
+        false,
+        C.Muted
+    )
+    summary.TextXAlignment = Enum.TextXAlignment.Right
+    summary.ZIndex = 82
+
+    local x = flatButton(
+        p,
+        "×",
+        UDim2.fromOffset(470, 8),
+        UDim2.fromOffset(28, 28),
+        Color3.fromRGB(100, 42, 47),
+        Color3.fromRGB(130, 53, 59),
+        function()
+            dim:Destroy()
+            renderItems()
+        end
+    )
+    x.ZIndex = 83
+    x.TextSize = 16
+
+    local sb = Instance.new("TextBox")
+    sb.Position = UDim2.fromOffset(14, 43)
+    sb.Size = UDim2.fromOffset(230, 28)
+    sb.BackgroundColor3 = C.Input
+    sb.BorderSizePixel = 0
+    sb.ClearTextOnFocus = false
+    sb.Text = ""
+    sb.PlaceholderText = "추가할 장비 검색"
+    sb.PlaceholderColor3 = C.Muted2
+    sb.TextColor3 = C.Text
+    sb.Font = Enum.Font.Gotham
+    sb.TextSize = 12
+    sb.ZIndex = 82
+    sb.Parent = p
+    corner(sb, 6)
+
+    local addHead = textLabel(
+        p,
+        "추가 가능한 장비",
+        UDim2.fromOffset(14, 76),
+        UDim2.fromOffset(230, 18),
+        10,
+        true,
+        C.Muted
+    )
+    addHead.ZIndex = 82
+
+    local selectedHead = textLabel(
+        p,
+        "현재 선택",
+        UDim2.fromOffset(264, 43),
+        UDim2.fromOffset(230, 28),
+        12,
+        true,
+        C.Text
+    )
+    selectedHead.ZIndex = 82
+
+    local left = panel(
+        p,
+        UDim2.fromOffset(14, 98),
+        UDim2.fromOffset(230, 176),
+        Color3.fromRGB(13, 16, 22),
+        6
+    )
+    left.ZIndex = 82
+
+    local right = panel(
+        p,
+        UDim2.fromOffset(264, 76),
+        UDim2.fromOffset(230, 198),
+        Color3.fromRGB(13, 16, 22),
+        6
+    )
+    right.ZIndex = 82
+
+    local popupObjects = {}
+    local leftPage, rightPage = 1, 1
+    local perPage = 5
+
+    local function clearPopupObjects()
+        for _, obj in ipairs(popupObjects) do
+            pcall(function() obj:Destroy() end)
+        end
+        popupObjects = {}
+    end
+
+    local function openItemSettings(item)
+        local detailDim, detailPanel = makeOverlay("ItemSettingsPopup", 360, 210)
+
+        local detailTitle = textLabel(
+            detailPanel, tostring(item.ko),
+            UDim2.fromOffset(14, 8), UDim2.fromOffset(300, 22), 12, true, C.Text
+        )
+        detailTitle.TextTruncate = Enum.TextTruncate.AtEnd
+        detailTitle.ZIndex = 82
+        local detailName = textLabel(
+            detailPanel, tostring(item.name),
+            UDim2.fromOffset(14, 29), UDim2.fromOffset(300, 16), 10, false, C.Muted
+        )
+        detailName.TextTruncate = Enum.TextTruncate.AtEnd
+        detailName.ZIndex = 82
+
+        local detailClose = flatButton(
+            detailPanel, "×", UDim2.fromOffset(320, 8), UDim2.fromOffset(28, 28),
+            Color3.fromRGB(100, 42, 47), Color3.fromRGB(130, 53, 59),
+            function() detailDim:Destroy() end
+        )
+        detailClose.ZIndex = 84
+        detailClose.TextSize = 16
+
+        local priceY = 96
+        if item.starred then
+            local starLabel = textLabel(
+                detailPanel, "조회할 성급",
+                UDim2.fromOffset(14, 54), UDim2.fromOffset(110, 18), 10, true, C.Muted
+            )
+            starLabel.ZIndex = 82
+            local filter = ensureStarFilter(item)
+            for star = 0, 3 do
+                local starKey = tostring(star)
+                local button
+                local function paintStar()
+                    local enabled = filter[starKey] == true
+                    button.Text = enabled and ("✓ " .. starKey .. "성") or (starKey .. "성")
+                    button.BackgroundColor3 = enabled and C.AccentSoft or C.Button
+                end
+                button = flatButton(
+                    detailPanel, starKey .. "성",
+                    UDim2.fromOffset(14 + star * 82, 74), UDim2.fromOffset(74, 27),
+                    C.Button, C.ButtonHover, function()
+                        filter[starKey] = not (filter[starKey] == true)
+                        scheduleConfigSave("장비별 성급 변경")
+                        paintStar()
+                    end
+                )
+                button.ZIndex = 84
+                button.MouseLeave:Connect(paintStar)
+                paintStar()
+            end
+            priceY = 112
+        end
+
+        local priceLabel = textLabel(
+            detailPanel, "장비별 긴급가",
+            UDim2.fromOffset(14, priceY), UDim2.fromOffset(120, 22), 10, true, C.Muted
+        )
+        priceLabel.ZIndex = 82
+
+        local individual = tonumber(config.ItemUrgentPrices[item.key])
+        local priceBox = Instance.new("TextBox")
+        priceBox.Position = UDim2.fromOffset(138, priceY)
+        priceBox.Size = UDim2.fromOffset(132, 28)
+        priceBox.BackgroundColor3 = C.Input
+        priceBox.BorderSizePixel = 0
+        priceBox.ClearTextOnFocus = false
+        priceBox.Text = individual and comma(individual) or ""
+        priceBox.PlaceholderText = "비우면 전역"
+        priceBox.PlaceholderColor3 = C.Muted2
+        priceBox.TextColor3 = C.Text
+        priceBox.Font = Enum.Font.Code
+        priceBox.TextSize = 12
+        priceBox.TextXAlignment = Enum.TextXAlignment.Center
+        priceBox.ZIndex = 83
+        priceBox.Parent = detailPanel
+        corner(priceBox, 5)
+
+        local function syncIndividualPrice()
+            local raw = (priceBox.Text or ""):gsub(",", ""):gsub("%s", "")
+            if raw == "" then
+                config.ItemUrgentPrices[item.key] = nil
+                scheduleConfigSave("장비별 긴급가 해제")
+                return
+            end
+            local number = tonumber(raw)
+            if number then
+                config.ItemUrgentPrices[item.key] = math.max(0, math.floor(number))
+                scheduleConfigSave("장비별 긴급가 변경")
+            end
+        end
+        priceBox:GetPropertyChangedSignal("Text"):Connect(syncIndividualPrice)
+        priceBox.FocusLost:Connect(function()
+            syncIndividualPrice()
+            local saved = tonumber(config.ItemUrgentPrices[item.key])
+            priceBox.Text = saved and comma(saved) or ""
+        end)
+
+        local help = textLabel(
+            detailPanel,
+            "전역 기준: " .. comma(config.UrgentPrice) .. " 다이아 · 비워두면 전역 기준 사용",
+            UDim2.fromOffset(14, priceY + 37), UDim2.fromOffset(330, 34), 10, false, C.Muted2
+        )
+        help.TextWrapped = true
+        help.ZIndex = 82
+    end
+
+    local function moveSelectedItem(item, delta)
+        local ordered = selectedItems()
+        local index
+        for i, selectedItem in ipairs(ordered) do
+            if selectedItem.key == item.key then
+                index = i
+                break
+            end
+        end
+        local target = index and (index + delta) or nil
+        if not index or not target or target < 1 or target > #ordered then
+            return
+        end
+        ordered[index], ordered[target] = ordered[target], ordered[index]
+        config.ScanOrder = {}
+        for _, selectedItem in ipairs(ordered) do
+            config.ScanOrder[#config.ScanOrder + 1] = selectedItem.key
+        end
+        scheduleConfigSave("선택 장비 스캔 순서 변경")
+    end
+
+    local function popupRow(parent, txt1, txt2, y, selectedStyle, callback, upCallback, downCallback, removeCallback)
+        local b = Instance.new("TextButton")
+        b.Position = UDim2.fromOffset(6, y)
+        b.Size = UDim2.fromOffset(218, 28)
+        b.BackgroundColor3 = selectedStyle
+            and Color3.fromRGB(62, 39, 46)
+            or C.Card
+        b.BorderSizePixel = 0
+        b.AutoButtonColor = false
+        b.Text = ""
+        b.ZIndex = 84
+        b.Parent = parent
+        corner(b, 5)
+
+        local primary = textLabel(
+            b,
+            (selectedStyle and "⚙ " or "+ ") .. txt1,
+            UDim2.fromOffset(7, 2),
+            UDim2.fromOffset(selectedStyle and 132 or 202, 13),
+            12,
+            true,
+            C.Text
+        )
+        primary.ZIndex = 85
+        primary.TextTruncate = Enum.TextTruncate.AtEnd
+
+        local secondary = textLabel(
+            b,
+            txt2,
+            UDim2.fromOffset(16, 14),
+            UDim2.fromOffset(selectedStyle and 122 or 192, 11),
+            10,
+            false,
+            C.Muted
+        )
+        secondary.ZIndex = 85
+        secondary.TextTruncate = Enum.TextTruncate.AtEnd
+
+        b.MouseEnter:Connect(function()
+            b.BackgroundColor3 = selectedStyle
+                and Color3.fromRGB(75, 47, 55)
+                or C.CardHover
+        end)
+        b.MouseLeave:Connect(function()
+            b.BackgroundColor3 = selectedStyle
+                and Color3.fromRGB(62, 39, 46)
+                or C.Card
+        end)
+        b.MouseButton1Click:Connect(callback)
+
+        if selectedStyle then
+            local up = flatButton(
+                b, "↑", UDim2.fromOffset(151, 4), UDim2.fromOffset(19, 20),
+                C.Button, C.ButtonHover, upCallback
+            )
+            local down = flatButton(
+                b, "↓", UDim2.fromOffset(173, 4), UDim2.fromOffset(19, 20),
+                C.Button, C.ButtonHover, downCallback
+            )
+            local remove = flatButton(
+                b, "×", UDim2.fromOffset(195, 4), UDim2.fromOffset(19, 20),
+                Color3.fromRGB(100, 42, 47), Color3.fromRGB(130, 53, 59), removeCallback
+            )
+            up.ZIndex = 86
+            down.ZIndex = 86
+            remove.ZIndex = 86
+            up.TextSize = 11
+            down.TextSize = 11
+            remove.TextSize = 12
+        end
+
+        popupObjects[#popupObjects + 1] = b
+    end
+
+    local function renderPopup()
+        clearPopupObjects()
+
+        local q = normalizeSearchText(sb.Text)
+        local available = {}
+        local chosen = selectedItems()
+
+        for _, item in ipairs(catalog) do
+            if not config.Selected[item.key] then
+                local hay = normalizeSearchText(
+                    tostring(item.ko) .. " "
+                    .. tostring(item.name) .. " "
+                    .. tostring(item.id)
+                )
+                if q == "" or string.find(hay, q, 1, true) then
+                    available[#available + 1] = item
+                end
+            end
+        end
+
+        table.sort(available, function(a, b) return a.ko < b.ko end)
+
+        local leftMax = math.max(1, math.ceil(#available / perPage))
+        local rightMax = math.max(1, math.ceil(#chosen / perPage))
+        leftPage = math.clamp(leftPage, 1, leftMax)
+        rightPage = math.clamp(rightPage, 1, rightMax)
+
+        summary.Text = "선택 " .. tostring(#chosen) .. "개"
+        selectedHead.Text = "현재 선택 · " .. tostring(#chosen) .. "개"
+
+        for i = 0, perPage - 1 do
+            local item = available[(leftPage - 1) * perPage + 1 + i]
+            if item then
+                popupRow(left, item.ko, item.name, 6 + i * 31, false, function()
+                    config.Selected[item.key] = true
+                    addToScanOrder(item.key)
+                    scheduleConfigSave("선택관리 장비 추가")
+                    renderPopup()
+                end)
+            end
+        end
+
+        for i = 0, perPage - 1 do
+            local item = chosen[(rightPage - 1) * perPage + 1 + i]
+            if item then
+                popupRow(right, item.ko, item.name, 6 + i * 31, true, function()
+                    openItemSettings(item)
+                end, function()
+                    moveSelectedItem(item, -1)
+                    renderPopup()
+                end, function()
+                    moveSelectedItem(item, 1)
+                    renderPopup()
+                end, function()
+                    config.Selected[item.key] = nil
+                    removeFromScanOrder(item.key)
+                    scheduleConfigSave("선택관리 장비 삭제")
+                    renderPopup()
+                end)
+            end
+        end
+
+        local leftInfo = textLabel(
+            left,
+            tostring(leftPage) .. " / " .. tostring(leftMax),
+            UDim2.fromOffset(8, 160),
+            UDim2.fromOffset(88, 13),
+            10,
+            false,
+            C.Muted2
+        )
+        leftInfo.ZIndex = 84
+        popupObjects[#popupObjects + 1] = leftInfo
+
+        local rightInfo = textLabel(
+            right,
+            tostring(rightPage) .. " / " .. tostring(rightMax),
+            UDim2.fromOffset(8, 182),
+            UDim2.fromOffset(88, 13),
+            10,
+            false,
+            C.Muted2
+        )
+        rightInfo.ZIndex = 84
+        popupObjects[#popupObjects + 1] = rightInfo
+
+        local lp = flatButton(left, "‹", UDim2.fromOffset(158, 157), UDim2.fromOffset(25, 17), C.Button, C.ButtonHover, function()
+            leftPage = math.max(1, leftPage - 1)
+            renderPopup()
+        end)
+        lp.ZIndex = 84
+        popupObjects[#popupObjects + 1] = lp
+
+        local ln = flatButton(left, "›", UDim2.fromOffset(189, 157), UDim2.fromOffset(25, 17), C.Button, C.ButtonHover, function()
+            leftPage = math.min(leftMax, leftPage + 1)
+            renderPopup()
+        end)
+        ln.ZIndex = 84
+        popupObjects[#popupObjects + 1] = ln
+
+        local rp = flatButton(right, "‹", UDim2.fromOffset(158, 179), UDim2.fromOffset(25, 17), C.Button, C.ButtonHover, function()
+            rightPage = math.max(1, rightPage - 1)
+            renderPopup()
+        end)
+        rp.ZIndex = 84
+        popupObjects[#popupObjects + 1] = rp
+
+        local rn = flatButton(right, "›", UDim2.fromOffset(189, 179), UDim2.fromOffset(25, 17), C.Button, C.ButtonHover, function()
+            rightPage = math.min(rightMax, rightPage + 1)
+            renderPopup()
+        end)
+        rn.ZIndex = 84
+        popupObjects[#popupObjects + 1] = rn
+    end
+
+    sb:GetPropertyChangedSignal("Text"):Connect(function()
+        leftPage = 1
+        renderPopup()
+    end)
+
+    renderPopup()
+end
+
+paintCategorySelection()
+renderItems()
+
+-- 게임 거래소 UI가 실제로 TerminalService.FindItem을 어떤 인수로 호출하는지
+-- 관찰하기 위한 1회 설치 작업입니다. FindItem 자체를 추가 호출하지 않습니다.
+task.spawn(function()
+    local service, err = waitForTerminalService()
+    if lifecycle.Closed or sharedEnvironment[GLOBAL_CONTROLLER_KEY] ~= lifecycle then
+        return
+    end
+
+    if service then
+        state.service = state.service or service
+        local okHook, hookMsg = installFindItemObserver(service)
+        addLog(okHook and "HOOK" or "ERROR", hookMsg)
+
+        if config.AutoStartScanner ~= false then
+            if selectedCount() == 0 then
+                addLog("AUTO", "자동 시작 대기 | 선택 장비가 없습니다.")
+            elseif type(config.WebhookUrl) ~= "string"
+                or config.WebhookUrl:gsub("%s", "") == "" then
+                addLog("AUTO", "자동 시작 대기 | 일반 Webhook이 비어 있습니다.")
+            else
+                startScanner("auto")
+            end
+        else
+            addLog("AUTO", "자동 스캔 시작 OFF | 수동 START 대기")
+        end
+    else
+        addLog("ERROR", "FindItem 관찰 준비 실패 | " .. tostring(err))
+        sendHealthAlert("TERMINAL_SERVICE", "FindItem 관찰 준비 실패 | " .. tostring(err))
+    end
+end)
+
+-- 기존 UI 상태 갱신 루프
+task.spawn(function()
+    while not lifecycle.Closed and gui and gui.Parent do
+        local elapsed = state.startedAt and math.max(0, os.time() - state.startedAt) or 0
+        local hh = math.floor(elapsed / 3600)
+        local mm = math.floor((elapsed % 3600) / 60)
+        local ss = elapsed % 60
+
+        statusValue.Text = state.running and "실행 중" or "정지"
+        statusValue.TextColor3 = state.running
+            and Color3.fromRGB(73, 201, 111)
+            or C.Text
+
+        selectedValue.Text = tostring(selectedCount()) .. "개"
+        selectedValue.TextColor3 = Color3.fromRGB(162, 151, 255)
+
+        alertValue.Text = tostring(state.alerts)
+        alertValue.TextColor3 = C.Yellow
+
+        timeValue.Text = string.format("%02d:%02d:%02d", hh, mm, ss)
+
+        sideStatusDot.TextColor3 = state.running
+            and Color3.fromRGB(73, 201, 111)
+            or C.Muted2
+        sideStatusText.Text = state.running and "실행 중" or "정지"
+        sideStatusText.TextColor3 = state.running
+            and Color3.fromRGB(73, 201, 111)
+            or C.Muted
+
+        local maxPage = math.max(1, math.ceil(#filteredItems / ITEMS_PER_PAGE_V32))
+        compactPage.Text = tostring(currentPage) .. " / " .. tostring(maxPage)
+
+        logHint.Text =
+            "현재: " .. tostring(state.current)
+            .. " | C" .. tostring(state.cycle)
+            .. " | 조건 " .. tostring(state.scans)
+            .. " | 호출 " .. tostring(state.remoteCalls)
+            .. " | 발견 " .. tostring(state.finds)
+            .. " | 알림 " .. tostring(state.alerts)
+            .. " | 중복 " .. tostring(state.duplicates)
+            .. " | 오류 " .. tostring(state.errors)
+
+        renderLogs()
+        task.wait(0.5)
+    end
+end)
