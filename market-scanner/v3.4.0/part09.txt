@@ -1,0 +1,589 @@
+ state.seenSerial += 1
+    record.lastSeen = now
+    record.orderAt = state.seenSerial
+    state.seenOrder[#state.seenOrder + 1] = {
+        key = key,
+        at = state.seenSerial,
+    }
+    pruneSeen(now)
+    return record, isNew
+end
+
+local function buildAlert(item, starLabel, result, alertKind, urgentPrice, record)
+    local joinUrl = buildJoinUrl(result.JobId)
+    local isUrgent = alertKind == "URGENT"
+    local isReminder = alertKind == "REMINDER"
+
+    local fields = {
+        {
+            name = "📦 아이템",
+            value = "**" .. tostring(item.ko) .. "**\n`" .. tostring(item.name) .. "`",
+            inline = false,
+        },
+        {
+            name = "⭐ 성급",
+            value = tostring(starLabel),
+            inline = true,
+        },
+        {
+            name = "💎 가격",
+            value = "**" .. comma(result.Price) .. " 다이아**",
+            inline = true,
+        },
+        {
+            name = "🚨 긴급 기준",
+            value = comma(urgentPrice) .. " 다이아 이하",
+            inline = true,
+        },
+        {
+            name = "🖥 서버",
+            value = tostring(result.ServerName)
+                .. " (" .. tostring(result.Players or "?")
+                .. "/" .. tostring(result.Max or "?") .. ")",
+            inline = false,
+        },
+        {
+            name = "🆔 JobId",
+            value = "`" .. tostring(result.JobId) .. "`",
+            inline = false,
+        },
+        {
+            name = "👤 판매자",
+            value = "검색 단계에서는 확인 불가",
+            inline = false,
+        },
+    }
+
+    if joinUrl then
+        fields[#fields+1] = {
+            name = "🎮 본계정 서버 입장",
+            value = "[PC/모바일 바로 입장](" .. joinUrl .. ")",
+            inline = false,
+        }
+    end
+
+    if isReminder and record then
+        fields[#fields + 1] = {
+            name = "🔄 재고 생존",
+            value = "최초 발견: " .. os.date("%Y-%m-%d %H:%M:%S", record.firstSeen)
+                .. "\n마지막 확인: " .. os.date("%Y-%m-%d %H:%M:%S", record.lastSeen),
+            inline = false,
+        }
+    end
+
+    local title = "📦 신규 매물 발견"
+    local color = 3066993
+    if isUrgent then
+        title = "🚨 긴급 매물 발견"
+        color = 15158332
+    elseif isReminder then
+        title = "🔄 재고 유지 확인"
+        color = 3447003
+    end
+
+    return {
+        username = "Military Tycoon 거래소 스캐너",
+        allowed_mentions = {parse={}},
+        embeds = {{
+            title = title,
+            color = color,
+            fields = fields,
+            footer = {
+                text = "조사계정: " .. ACCOUNT
+                    .. " · " .. os.date("%Y-%m-%d %H:%M:%S")
+            }
+        }}
+    }
+end
+
+
+local function sendGeneralListingAlert(item, starLabel, result, urgentPrice, record, reminder)
+    local payload = buildAlert(
+        item,
+        starLabel,
+        result,
+        reminder and "REMINDER" or "NEW",
+        urgentPrice,
+        record
+    )
+    local sent, sendErr = sendWebhookPayload(payload)
+    if sent then
+        if reminder then
+            state.stockReminders += 1
+            record.lastReminderAt = os.time()
+            addLog(
+                "DISCORD",
+                "재고 유지 확인 일반 Webhook 전송 성공 | "
+                    .. tostring(item.ko) .. " | " .. comma(result.Price)
+            )
+        else
+            state.alerts += 1
+            record.generalSent = true
+            record.lastReminderAt = os.time()
+            addLog(
+                "DISCORD",
+                "일반 Webhook 전송 성공 | "
+                    .. tostring(item.ko) .. " | " .. comma(result.Price)
+            )
+        end
+        return true
+    end
+
+    state.errors += 1
+    state.lastError = "일반 Webhook: " .. tostring(sendErr)
+    addLog("ERROR", "일반 Webhook 전송 실패 | " .. tostring(sendErr))
+    return false
+end
+
+local function sendUrgentListingAlert(item, starLabel, result, urgentPrice, record)
+    if type(config.UrgentWebhookUrl) ~= "string"
+        or config.UrgentWebhookUrl:gsub("%s", "") == "" then
+        detailLog("URGENT", "긴급 Webhook URL이 비어 있어 일반 알림만 전송")
+        return false
+    end
+
+    local payload = buildAlert(item, starLabel, result, "URGENT", urgentPrice, record)
+    local sent, sendErr = sendUrgentWebhookPayload(payload)
+    if sent then
+        state.urgentAlerts += 1
+        record.urgentSent = true
+        addLog(
+            "URGENT",
+            "긴급 Webhook 전송 성공 | "
+                .. tostring(item.ko) .. " | " .. comma(result.Price)
+        )
+        return true
+    end
+
+    state.errors += 1
+    state.lastError = "긴급 Webhook: " .. tostring(sendErr)
+    addLog("ERROR", "긴급 Webhook 전송 실패 | " .. tostring(sendErr))
+    return false
+end
+
+local function scanCondition(item, star, starLabel)
+    state.current = item.ko .. " · " .. starLabel
+
+    detailLog(
+        "SCAN",
+        tostring(item.ko) .. " | " .. tostring(starLabel) .. " 조회 시작"
+    )
+
+    local result, matchedName, matchedMode, err, failureKind =
+        findItemResult(item, star, starLabel)
+
+    state.scans += 1
+
+    if err then
+        state.lastError = err
+        if failureKind == "STOPPED" then
+            return
+        end
+        if failureKind ~= "COOLDOWN" then
+            state.errors += 1
+        end
+        markUnhealthyQuery(failureKind, err)
+        return
+    end
+
+    if not result then
+        markHealthyQuery()
+        detailLog(
+            "MISS",
+            tostring(item.ko) .. " | " .. tostring(starLabel) .. " | 최종 결과 없음"
+        )
+        return
+    end
+
+    markHealthyQuery()
+    state.finds += 1
+
+    addLog(
+        "FOUND",
+        tostring(matchedMode or "?") .. " 조회 성공"
+            .. " | " .. comma(result.Price) .. " 다이아"
+            .. " | " .. tostring(item.ko)
+            .. " | " .. tostring(starLabel)
+            .. " | value=" .. tostring(matchedName or "?")
+    )
+
+    local key = resultKey(item, starLabel, result)
+    local seenNow = os.time()
+    local record, isNew = touchSeen(key, seenNow)
+    local urgentPrice = getUrgentPriceForItem(item)
+    local urgent = result.Price <= urgentPrice
+
+    if not isNew then
+        state.duplicates += 1
+        addLog(
+            "DUPLICATE",
+            "이미 알림 전송한 매물 | "
+                .. tostring(item.ko)
+                .. " | " .. tostring(starLabel)
+                .. " | " .. comma(result.Price)
+                .. " | JobId " .. tostring(result.JobId)
+        )
+
+        if state.stopRequested or lifecycle.Closed then
+            return
+        end
+
+        if not record.generalSent then
+            sendGeneralListingAlert(item, starLabel, result, urgentPrice, record, false)
+        end
+        if urgent and not record.urgentSent then
+            sendUrgentListingAlert(item, starLabel, result, urgentPrice, record)
+        end
+
+        local reminderMinutes = math.max(0, tonumber(config.StockReminderMinutes) or 0)
+        local reminderSeconds = reminderMinutes * 60
+        if record.generalSent and reminderSeconds > 0
+            and seenNow - (tonumber(record.lastReminderAt) or record.firstSeen) >= reminderSeconds then
+            sendGeneralListingAlert(item, starLabel, result, urgentPrice, record, true)
+        end
+        return
+    end
+
+    if state.stopRequested or lifecycle.Closed then
+        return
+    end
+
+    sendGeneralListingAlert(item, starLabel, result, urgentPrice, record, false)
+    if urgent and not state.stopRequested and not lifecycle.Closed then
+        sendUrgentListingAlert(item, starLabel, result, urgentPrice, record)
+    end
+end
+
+local function addToScanOrder(key)
+    for _, existing in ipairs(config.ScanOrder) do
+        if existing == key then
+            return
+        end
+    end
+    config.ScanOrder[#config.ScanOrder + 1] = key
+end
+
+local function removeFromScanOrder(key)
+    for index = #config.ScanOrder, 1, -1 do
+        if config.ScanOrder[index] == key then
+            table.remove(config.ScanOrder, index)
+        end
+    end
+end
+
+local function selectedItems()
+    local out = {}
+    local added = {}
+
+    for _, key in ipairs(config.ScanOrder) do
+        local item = itemByKey[key]
+        if item and config.Selected[key] == true and not added[key] then
+            out[#out + 1] = item
+            added[key] = true
+        end
+    end
+
+    for _, item in ipairs(catalog) do
+        if config.Selected[item.key] == true and not added[item.key] then
+            out[#out + 1] = item
+            added[item.key] = true
+        end
+    end
+    return out
+end
+
+local function selectedCount()
+    local n = 0
+    for key, selected in pairs(config.Selected) do
+        if selected == true and itemByKey[key] then n += 1 end
+    end
+    return n
+end
+
+local function scannerLoop()
+    if state.running or lifecycle.Closed then return end
+
+    local chosen = selectedItems()
+    local uiSelectedCount = selectedCount()
+
+    if #chosen == 0 then
+        state.lastError = "조회할 장비를 하나 이상 선택해주세요."
+        addLog("ERROR", state.lastError)
+        return
+    end
+
+    state.running = true
+    state.stopRequested = false
+    state.startedAt = os.time()
+    state.current = "TerminalService 준비 중"
+
+    addLog("START", "선택 장비 " .. tostring(#chosen) .. "개")
+
+    if uiSelectedCount ~= #chosen then
+        addLog(
+            "ERROR",
+            "UI 선택 수와 실제 스캔 대상 수 불일치 | UI="
+                .. tostring(uiSelectedCount)
+                .. " | 실제=" .. tostring(#chosen)
+        )
+    end
+
+    if config.DetailedLogs then
+        local maxList = math.min(30, #chosen)
+        for i = 1, maxList do
+            local item = chosen[i]
+            local starText = "성급 없음"
+            if item.starred then
+                local labels = {}
+                for _, star in ipairs(selectedStars(item)) do
+                    labels[#labels + 1] = tostring(star) .. "성"
+                end
+                starText = #labels > 0 and table.concat(labels, "/") or "성급 선택 없음"
+            end
+            addLog(
+                "START",
+                tostring(i) .. ". " .. tostring(item.ko)
+                    .. " | Name=" .. tostring(item.name)
+                    .. " | ID=" .. tostring(item.id)
+                    .. " | " .. starText
+            )
+        end
+        if #chosen > maxList then
+            addLog(
+                "START",
+                "... 외 " .. tostring(#chosen - maxList) .. "개 선택됨"
+            )
+        end
+    end
+
+    local conditionCount = countSelectedConditions(chosen)
+    if conditionCount == 0 then
+        state.running = false
+        state.lastError = "선택된 성급 검색 조건이 없습니다."
+        addLog("ERROR", state.lastError)
+        return
+    end
+    local minimumCalls, maximumCalls = countSelectedRequestRange(chosen)
+    local expectedCalls = tostring(minimumCalls)
+    if maximumCalls ~= minimumCalls then
+        expectedCalls = expectedCalls .. "~" .. tostring(maximumCalls)
+    end
+
+    addLog(
+        "INFO",
+        "1사이클 검색 조건 " .. tostring(conditionCount)
+            .. "회 | FindItem 예상 " .. expectedCalls
+            .. "회 | 기본 대기만 약 "
+            .. string.format("%.1f", conditionCount * QUERY_INTERVAL / 60)
+            .. "분"
+    )
+
+    if #chosen >= 50 then
+        addLog(
+            "WARN",
+            "선택 장비가 많아 특정 아이템 조회까지 오래 걸릴 수 있습니다."
+        )
+    end
+
+    local service = state.service
+    local err = nil
+
+    if not service then
+        service, err = waitForTerminalService()
+    end
+
+    if not service then
+        state.running = false
+        state.errors += 1
+        state.lastError = err
+        addLog("ERROR", err)
+        sendHealthAlert("TERMINAL_SERVICE", tostring(err))
+        return
+    end
+
+    state.service = service
+
+    local hookOk, hookMsg = installFindItemObserver(service)
+    if hookOk then
+        addLog("HOOK", hookMsg)
+    else
+        addLog("ERROR", hookMsg)
+    end
+
+    addLog("CHECK", "선택 장비 " .. tostring(#chosen) .. "개")
+    addLog("CHECK", "검색 조건 " .. tostring(conditionCount) .. "개")
+    addLog("CHECK", "예상 FindItem " .. expectedCalls .. "회")
+    addLog("CHECK", "TerminalService OK")
+    addLog("CHECK", "observer " .. (state.findItemHookInstalled and "OK" or "미설치"))
+    addLog("CHECK", "일반 Webhook " .. (config.WebhookUrl ~= "" and "설정됨" or "비어 있음"))
+    addLog("CHECK", "긴급 Webhook " .. (config.UrgentWebhookUrl ~= "" and "설정됨" or "비어 있음"))
+    addLog("CHECK", "자동 저장 " .. (type(writefile) == "function" and "OK" or "미지원"))
+    addLog("CHECK", "저사양 모드 " .. (config.LowResourceMode and "ON" or "OFF"))
+    addLog("CHECK", "AFK 유지 " .. (config.AfkKeepAlive and "ON" or "OFF"))
+    addLog("CHECK", "상세 로그 " .. (config.DetailedLogs and "ON" or "OFF"))
+
+    while not state.stopRequested
+        and not lifecycle.Closed
+        and sharedEnvironment[GLOBAL_CONTROLLER_KEY] == lifecycle do
+        state.cycle += 1
+        chosen = selectedItems()
+
+        local cycleStartClock = os.clock()
+        local baseScans = state.scans
+        local baseFinds = state.finds
+        local baseAlerts = state.alerts
+        local baseDuplicates = state.duplicates
+        local baseReminders = state.stockReminders
+        local baseErrors = state.errors
+        local baseRemote = state.remoteCalls
+        local baseCooldown = state.cooldownResponses
+
+        for _, item in ipairs(chosen) do
+            if state.stopRequested then break end
+
+            if item.starred then
+                for _, star in ipairs(selectedStars(item)) do
+                    if state.stopRequested then break end
+
+                    scanCondition(item, star, tostring(star) .. "성")
+
+                    local waited = 0
+                    while waited < QUERY_INTERVAL and not state.stopRequested do
+                        task.wait(0.1)
+                        waited += 0.1
+                    end
+                end
+            else
+                scanCondition(item, nil, "성급 없음")
+
+                local waited = 0
+                while waited < QUERY_INTERVAL and not state.stopRequested do
+                    task.wait(0.1)
+                    waited += 0.1
+                end
+            end
+        end
+
+        if not state.stopRequested then
+            local elapsed = os.clock() - cycleStartClock
+
+            addLog(
+                "CYCLE",
+                "#" .. tostring(state.cycle)
+                    .. " 완료 | 조건 " .. tostring(state.scans - baseScans)
+                    .. " | 실제호출 " .. tostring(state.remoteCalls - baseRemote)
+                    .. " | 발견 " .. tostring(state.finds - baseFinds)
+                    .. " | 신규알림 " .. tostring(state.alerts - baseAlerts)
+                    .. " | 중복 " .. tostring(state.duplicates - baseDuplicates)
+                    .. " | 재고확인 " .. tostring(state.stockReminders - baseReminders)
+                    .. " | 쿨다운 " .. tostring(state.cooldownResponses - baseCooldown)
+                    .. " | 오류 " .. tostring(state.errors - baseErrors)
+                    .. " | " .. string.format("%.1f초", elapsed)
+            )
+
+            state.current = "다음 사이클 대기"
+
+            local waited = 0
+            while waited < CYCLE_PAUSE and not state.stopRequested do
+                task.wait(0.1)
+                waited += 0.1
+            end
+        end
+    end
+
+    state.running = false
+    state.current = "정지"
+    addLog("INFO", "스캐너 정지")
+end
+
+local function startScanner(source)
+    if state.running or state.startPending or lifecycle.Closed then
+        return false, "이미 실행 중이거나 시작 준비 중입니다."
+    end
+
+    local chosen = selectedItems()
+    if #chosen == 0 then
+        addLog("WARN", "조회 장비를 선택해주세요")
+        return false, "선택 장비 없음"
+    end
+    if countSelectedConditions(chosen) == 0 then
+        addLog("WARN", "선택한 성급 검색 조건이 없습니다.")
+        return false, "검색 조건 없음"
+    end
+    if type(config.WebhookUrl) ~= "string" or config.WebhookUrl:gsub("%s", "") == "" then
+        addLog("WARN", "일반 Webhook URL을 설정해주세요")
+        return false, "일반 Webhook 없음"
+    end
+
+    state.startPending = true
+    addLog("INFO", (source == "auto" and "자동 스캔 시작 준비" or "수동 스캔 시작 준비"))
+    task.spawn(function()
+        local okLoop, loopErr = pcall(scannerLoop)
+        state.startPending = false
+
+        if not okLoop and not lifecycle.Closed then
+            state.running = false
+            state.errors += 1
+            state.lastError = "scannerLoop 예외: " .. tostring(loopErr)
+            addLog("ERROR", state.lastError)
+            sendHealthAlert("SCANNER_LOOP", state.lastError)
+        end
+    end)
+    return true, "시작 요청 완료"
+end
+
+local function stopScanner()
+    state.stopRequested = true
+    addLog("INFO", "정지 요청")
+end
+
+-- =========================
+-- GUI V3.4.0
+-- 620x450 기준 레이아웃은 V3.3 그대로 유지하고 글자 크기만 조정.
+-- =========================
+gui = Instance.new("ScreenGui")
+gui.Name = "MarketSelectedScannerGuiV340"
+gui.ResetOnSpawn = false
+gui.DisplayOrder = 9999
+gui.Parent = playerGui
+gui.Destroying:Connect(function()
+    cleanupScanner("gui-destroyed")
+end)
+
+-- Palette
+local C = {
+    Root = Color3.fromRGB(10, 12, 17),
+    Sidebar = Color3.fromRGB(14, 17, 23),
+    Panel = Color3.fromRGB(18, 22, 30),
+    Panel2 = Color3.fromRGB(22, 27, 36),
+    Card = Color3.fromRGB(27, 32, 42),
+    CardHover = Color3.fromRGB(33, 39, 50),
+    CardSelected = Color3.fromRGB(39, 35, 67),
+    Input = Color3.fromRGB(24, 29, 39),
+    Button = Color3.fromRGB(31, 37, 48),
+    ButtonHover = Color3.fromRGB(39, 46, 59),
+    Text = Color3.fromRGB(235, 238, 244),
+    Muted = Color3.fromRGB(139, 149, 164),
+    Muted2 = Color3.fromRGB(104, 114, 129),
+    Accent = Color3.fromRGB(105, 90, 220),
+    AccentSoft = Color3.fromRGB(70, 62, 135),
+    Green = Color3.fromRGB(55, 137, 91),
+    GreenHover = Color3.fromRGB(65, 153, 102),
+    Red = Color3.fromRGB(133, 67, 72),
+    RedHover = Color3.fromRGB(150, 76, 82),
+    Yellow = Color3.fromRGB(218, 169, 63),
+    Blue = Color3.fromRGB(92, 142, 226),
+    Border = Color3.fromRGB(45, 51, 63),
+}
+
+local frame = Instance.new("Frame")
+frame.AnchorPoint = Vector2.new(0.5, 0)
+frame.Position = UDim2.new(0.5, 0, 0, 8)
+frame.Size = UDim2.fromOffset(608, 402)
+frame.BackgroundColor3 = C.Root
+frame.BorderSizePixel = 0
+frame.Parent = gui
+
+local rootCorner = Instance.new("UICorner")
+rootCorner.CornerRadius = UDim.new(0, 10)
+rootCorner.Par
