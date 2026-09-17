@@ -1,0 +1,590 @@
+anel(
+    main,
+    UDim2.fromOffset(0, 280),
+    UDim2.fromOffset(468, 72),
+    C.Panel,
+    7
+)
+
+textLabel(
+    logPanel,
+    "실행 로그",
+    UDim2.fromOffset(9, 4),
+    UDim2.fromOffset(85, 17),
+    12,
+    true,
+    C.Text
+)
+
+local logHint = textLabel(
+    logPanel,
+    "",
+    UDim2.fromOffset(96, 4),
+    UDim2.fromOffset(315, 17),
+    10,
+    false,
+    C.Muted2
+)
+logHint.TextXAlignment = Enum.TextXAlignment.Right
+
+local copyLogBtn = flatButton(
+    logPanel,
+    "복사",
+    UDim2.fromOffset(417, 3),
+    UDim2.fromOffset(42, 18),
+    C.Button,
+    C.ButtonHover,
+    function()
+        local fn = setclipboard or toclipboard or set_clipboard
+        if type(fn) ~= "function" then
+            addLog("ERROR", "클립보드 복사 기능을 찾지 못했습니다.")
+            return
+        end
+
+        local lines = {
+            "=== Military Tycoon 거래소 스캐너 V3.3 진단 로그 ===",
+            "Account=" .. ACCOUNT,
+            "PlaceId=" .. tostring(game.PlaceId),
+            "JobId=" .. tostring(game.JobId),
+            "DetailedLogs=" .. tostring(config.DetailedLogs),
+            "",
+        }
+
+        for i = #(state.logs or {}), 1, -1 do
+            local r = state.logs[i]
+            lines[#lines + 1] =
+                "[" .. tostring(r.at or "") .. "]"
+                .. " [" .. tostring(r.kind or "INFO") .. "] "
+                .. tostring(r.message or "")
+        end
+
+        local ok, err = pcall(fn, table.concat(lines, "\n"))
+        addLog(ok and "SUCCESS" or "ERROR", ok and "진단 로그 복사 완료" or tostring(err))
+    end
+)
+copyLogBtn.TextSize = 10
+
+local logScroll = Instance.new("ScrollingFrame")
+logScroll.Position = UDim2.fromOffset(7, 23)
+logScroll.Size = UDim2.fromOffset(454, 43)
+logScroll.BackgroundColor3 = Color3.fromRGB(13, 16, 22)
+logScroll.BorderSizePixel = 0
+logScroll.ScrollBarThickness = 3
+logScroll.ScrollBarImageColor3 = C.Muted2
+logScroll.CanvasSize = UDim2.fromOffset(0, 0)
+logScroll.AutomaticCanvasSize = Enum.AutomaticSize.None
+logScroll.Parent = logPanel
+corner(logScroll, 5)
+
+local logText = Instance.new("TextLabel")
+logText.Position = UDim2.fromOffset(4, 2)
+logText.Size = UDim2.new(1, -10, 0, 16)
+logText.BackgroundTransparency = 1
+logText.RichText = true
+logText.Text = ""
+logText.TextColor3 = C.Text
+logText.Font = Enum.Font.Code
+logText.TextSize = 11
+logText.TextXAlignment = Enum.TextXAlignment.Left
+logText.TextYAlignment = Enum.TextYAlignment.Top
+logText.TextWrapped = false
+logText.AutomaticSize = Enum.AutomaticSize.Y
+logText.Parent = logScroll
+
+local LOG_HEX = {
+    INFO = "#8B95A4",
+    START = "#A39AFF",
+    HOOK = "#A39AFF",
+    SCAN = "#8B95A4",
+    QUERY = "#8B95A4",
+    RAW = "#6C7481",
+    ["RAW-WARN"] = "#DAA93F",
+    MATCH = "#6FA8FF",
+    MISS = "#747E8C",
+    FOUND = "#5C8EE2",
+    DUPLICATE = "#C38AE5",
+    DISCORD = "#B07CE1",
+    URGENT = "#F06767",
+    SUCCESS = "#4FBE6F",
+    PERF = "#70C4A5",
+    WARN = "#DAA93F",
+    WARNING = "#DAA93F",
+    ERROR = "#E05B5B",
+    CYCLE = "#6FA8FF",
+    ["UI-CALL"] = "#A39AFF",
+    ["UI-RAW"] = "#8F84E8",
+}
+
+local lastLogSignature = ""
+
+local function richEscape(s)
+    s = tostring(s or "")
+    s = s:gsub("&", "&amp;")
+    s = s:gsub("<", "&lt;")
+    s = s:gsub(">", "&gt;")
+    return s
+end
+
+local function renderLogs()
+    local logs = state.logs or {}
+    local first = logs[1]
+    local sig = tostring(#logs)
+
+    if first then
+        sig = sig .. "|" .. tostring(first.at)
+            .. "|" .. tostring(first.kind)
+            .. "|" .. tostring(first.message)
+    end
+
+    if sig == lastLogSignature then
+        return
+    end
+    lastLogSignature = sig
+
+    if #logs == 0 then
+        logText.Text = '<font color="#6C7481">로그 대기 중...</font>'
+        logScroll.CanvasSize = UDim2.fromOffset(0, 18)
+        return
+    end
+
+    local lines = {}
+    local maxRows = math.min(100, #logs)
+
+    for i = 1, maxRows do
+        local r = logs[i]
+        local kind = tostring(r.kind or "INFO")
+        local color = LOG_HEX[kind] or "#8B95A4"
+
+        lines[#lines + 1] =
+            '<font color="#6C7481">' .. richEscape(r.at) .. '</font>'
+            .. '  <font color="' .. color .. '"><b>[' .. richEscape(kind) .. ']</b></font>'
+            .. '  <font color="#EBEEF4">' .. richEscape(r.message) .. '</font>'
+    end
+
+    logText.Text = table.concat(lines, "\n")
+    local height = math.max(18, maxRows * 15 + 4)
+    logText.Size = UDim2.new(1, -10, 0, height)
+    logScroll.CanvasSize = UDim2.fromOffset(0, height + 4)
+end
+
+-- Overlay helper
+local function makeOverlay(name, w, h)
+    local old = frame:FindFirstChild(name)
+    if old then old:Destroy() end
+
+    local dim = Instance.new("Frame")
+    dim.Name = name
+    dim.Position = UDim2.fromScale(0, 0)
+    dim.Size = UDim2.fromScale(1, 1)
+    dim.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    dim.BackgroundTransparency = 0.32
+    dim.BorderSizePixel = 0
+    dim.ZIndex = 80
+    dim.Parent = frame
+
+    local p = Instance.new("Frame")
+    p.AnchorPoint = Vector2.new(0.5, 0.5)
+    p.Position = UDim2.fromScale(0.5, 0.5)
+    p.Size = UDim2.fromOffset(w, h)
+    p.BackgroundColor3 = C.Panel
+    p.BorderSizePixel = 0
+    p.ZIndex = 81
+    p.Parent = dim
+    corner(p, 9)
+
+    return dim, p
+end
+
+-- Settings popup: 기존 크기를 유지하면서 자동 저장과 저사양 토글만 추가.
+--[[ V3.3.4 설정창은 기준 레이아웃 참고용으로만 보존하고 실행하지 않는다.
+openSettings = function()
+    local dim, p = makeOverlay("SettingsPopup", 430, 244)
+
+    local t = textLabel(
+        p,
+        "설정",
+        UDim2.fromOffset(14, 9),
+        UDim2.fromOffset(300, 24),
+        14,
+        true,
+        C.Text
+    )
+    t.ZIndex = 82
+
+    local x = flatButton(
+        p,
+        "×",
+        UDim2.fromOffset(390, 8),
+        UDim2.fromOffset(28, 28),
+        Color3.fromRGB(100, 42, 47),
+        Color3.fromRGB(130, 53, 59),
+        function() dim:Destroy() end
+    )
+    x.ZIndex = 83
+    x.TextSize = 16
+
+    local webhookLabel = textLabel(
+        p,
+        "Discord Webhook",
+        UDim2.fromOffset(14, 45),
+        UDim2.fromOffset(160, 18),
+        10,
+        true,
+        C.Muted
+    )
+    webhookLabel.ZIndex = 82
+
+    local wb = Instance.new("TextBox")
+    wb.Position = UDim2.fromOffset(14, 65)
+    wb.Size = UDim2.fromOffset(402, 31)
+    wb.BackgroundColor3 = C.Input
+    wb.BorderSizePixel = 0
+    wb.ClearTextOnFocus = false
+    wb.MultiLine = false
+    wb.Text = config.WebhookUrl
+    wb.PlaceholderText = "Discord Webhook URL"
+    wb.PlaceholderColor3 = C.Muted2
+    wb.TextColor3 = C.Text
+    wb.Font = Enum.Font.Code
+    wb.TextSize = 11
+    wb.TextXAlignment = Enum.TextXAlignment.Left
+    wb.TextTruncate = Enum.TextTruncate.AtEnd
+    wb.ZIndex = 82
+    wb.Parent = p
+    corner(wb, 6)
+
+    wb:GetPropertyChangedSignal("Text"):Connect(function()
+        config.WebhookUrl = wb.Text or ""
+        scheduleConfigSave("Discord Webhook 변경")
+    end)
+
+    local urgentLabel = textLabel(
+        p,
+        "긴급 기준",
+        UDim2.fromOffset(14, 106),
+        UDim2.fromOffset(80, 28),
+        10,
+        true,
+        C.Muted
+    )
+    urgentLabel.ZIndex = 82
+
+    local pb = Instance.new("TextBox")
+    pb.Position = UDim2.fromOffset(98, 106)
+    pb.Size = UDim2.fromOffset(110, 28)
+    pb.BackgroundColor3 = C.Input
+    pb.BorderSizePixel = 0
+    pb.ClearTextOnFocus = false
+    pb.Text = comma(config.UrgentPrice)
+    pb.TextColor3 = C.Text
+    pb.Font = Enum.Font.Code
+    pb.TextSize = 12
+    pb.TextXAlignment = Enum.TextXAlignment.Center
+    pb.ZIndex = 82
+    pb.Parent = p
+    corner(pb, 6)
+
+    local function syncUrgentPrice()
+        local cleaned = (pb.Text or ""):gsub(",", "")
+        local n = tonumber(cleaned)
+        if n then
+            config.UrgentPrice = math.max(0, math.floor(n))
+            scheduleConfigSave("긴급 가격 변경")
+        end
+    end
+
+    pb:GetPropertyChangedSignal("Text"):Connect(syncUrgentPrice)
+    pb.FocusLost:Connect(function()
+        syncUrgentPrice()
+        pb.Text = comma(config.UrgentPrice)
+    end)
+
+    local detailedEnabled = (config.DetailedLogs ~= false)
+
+    local detailLabel = textLabel(
+        p,
+        "상세 조회 로그",
+        UDim2.fromOffset(14, 143),
+        UDim2.fromOffset(120, 28),
+        10,
+        true,
+        C.Muted
+    )
+    detailLabel.ZIndex = 82
+
+    local detailToggle
+    local function paintDetailToggle()
+        if not detailToggle then return end
+        detailToggle.Text = detailedEnabled and "ON" or "OFF"
+        detailToggle.BackgroundColor3 = detailedEnabled and C.AccentSoft or C.Button
+    end
+
+    detailToggle = flatButton(
+        p,
+        detailedEnabled and "ON" or "OFF",
+        UDim2.fromOffset(138, 143),
+        UDim2.fromOffset(70, 28),
+        detailedEnabled and C.AccentSoft or C.Button,
+        C.Accent,
+        function()
+            detailedEnabled = not detailedEnabled
+            config.DetailedLogs = detailedEnabled
+            scheduleConfigSave("상세 조회 로그 변경")
+            paintDetailToggle()
+        end
+    )
+    detailToggle.ZIndex = 83
+    detailToggle.MouseLeave:Connect(paintDetailToggle)
+
+    local lowResourceLabel = textLabel(
+        p,
+        "저사양 조사 모드",
+        UDim2.fromOffset(218, 143),
+        UDim2.fromOffset(120, 28),
+        10,
+        true,
+        C.Muted
+    )
+    lowResourceLabel.ZIndex = 82
+
+    local lowResourceEnabled = (config.LowResourceMode ~= false)
+    local lowResourceToggle
+    local function paintLowResourceToggle()
+        if not lowResourceToggle then return end
+        lowResourceToggle.Text = lowResourceEnabled and "ON" or "OFF"
+        lowResourceToggle.BackgroundColor3 = lowResourceEnabled and C.AccentSoft or C.Button
+    end
+
+    lowResourceToggle = flatButton(
+        p,
+        lowResourceEnabled and "ON" or "OFF",
+        UDim2.fromOffset(346, 143),
+        UDim2.fromOffset(70, 28),
+        lowResourceEnabled and C.AccentSoft or C.Button,
+        C.Accent,
+        function()
+            lowResourceEnabled = not lowResourceEnabled
+            config.LowResourceMode = lowResourceEnabled
+            applyLowResourceMode(lowResourceEnabled)
+            scheduleConfigSave("저사양 조사 모드 변경")
+            paintLowResourceToggle()
+        end
+    )
+    lowResourceToggle.ZIndex = 83
+    lowResourceToggle.MouseLeave:Connect(paintLowResourceToggle)
+
+    local autoSaveLabel = textLabel(
+        p,
+        "자동 저장",
+        UDim2.fromOffset(14, 194),
+        UDim2.fromOffset(92, 31),
+        10,
+        true,
+        C.Muted
+    )
+    autoSaveLabel.ZIndex = 82
+
+    local test = flatButton(
+        p,
+        "웹훅 테스트",
+        UDim2.fromOffset(114, 194),
+        UDim2.fromOffset(112, 31),
+        C.Button,
+        C.ButtonHover,
+        function()
+            config.WebhookUrl = wb.Text or ""
+            scheduleConfigSave("웹훅 테스트 전 설정")
+
+            -- 기존 V3.2 웹훅 테스트 전송 로직 유지.
+            local ok, msg = sendWebhookPayload({
+                username = "Military Tycoon 거래소 스캐너",
+                allowed_mentions = {parse = {}},
+                embeds = {{
+                    title = "✅ 웹훅 연결 테스트",
+                    color = 3066993,
+                    description = "선택 장비: **" .. tostring(selectedCount()) .. "개**"
+                }}
+            })
+
+            addLog(ok and "SUCCESS" or "ERROR", ok and "웹훅 테스트 성공" or tostring(msg))
+        end
+    )
+    test.ZIndex = 83
+end
+]]
+
+-- V3.4.0 settings: 메인 620x450은 그대로 두고 기존 설정 팝업 안만 스크롤한다.
+openSettings = function()
+    local dim, p = makeOverlay("SettingsPopup", 430, 244)
+
+    local titleLabel = textLabel(
+        p, "설정 · 모든 변경 자동 저장",
+        UDim2.fromOffset(14, 9), UDim2.fromOffset(350, 24), 14, true, C.Text
+    )
+    titleLabel.ZIndex = 82
+
+    local close = flatButton(
+        p, "×", UDim2.fromOffset(390, 8), UDim2.fromOffset(28, 28),
+        Color3.fromRGB(100, 42, 47), Color3.fromRGB(130, 53, 59),
+        function() dim:Destroy() end
+    )
+    close.ZIndex = 83
+    close.TextSize = 16
+
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Name = "SettingsScroll"
+    scroll.Position = UDim2.fromOffset(14, 42)
+    scroll.Size = UDim2.fromOffset(402, 188)
+    scroll.BackgroundColor3 = Color3.fromRGB(13, 16, 22)
+    scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 5
+    scroll.ScrollBarImageColor3 = C.Muted2
+    scroll.CanvasSize = UDim2.fromOffset(0, 292)
+    scroll.ZIndex = 82
+    scroll.Parent = p
+    corner(scroll, 6)
+
+    local function settingLabel(text, y, width)
+        local label = textLabel(
+            scroll, text, UDim2.fromOffset(8, y), UDim2.fromOffset(width or 180, 16),
+            10, true, C.Muted
+        )
+        label.ZIndex = 83
+        return label
+    end
+
+    local function settingBox(text, placeholder, x, y, width)
+        local box = Instance.new("TextBox")
+        box.Position = UDim2.fromOffset(x, y)
+        box.Size = UDim2.fromOffset(width, 29)
+        box.BackgroundColor3 = C.Input
+        box.BorderSizePixel = 0
+        box.ClearTextOnFocus = false
+        box.MultiLine = false
+        box.Text = text or ""
+        box.PlaceholderText = placeholder or ""
+        box.PlaceholderColor3 = C.Muted2
+        box.TextColor3 = C.Text
+        box.Font = Enum.Font.Code
+        box.TextSize = 11
+        box.TextXAlignment = Enum.TextXAlignment.Left
+        box.TextTruncate = Enum.TextTruncate.AtEnd
+        box.ZIndex = 83
+        box.Parent = scroll
+        corner(box, 5)
+        return box
+    end
+
+    local normalBox = settingBox(config.WebhookUrl, "일반 Discord Webhook URL", 8, 20, 278)
+    settingLabel("일반 Discord Webhook", 2, 220)
+    normalBox:GetPropertyChangedSignal("Text"):Connect(function()
+        config.WebhookUrl = normalBox.Text or ""
+        scheduleConfigSave("일반 Webhook 변경")
+    end)
+    local normalTest = flatButton(
+        scroll, "일반 테스트", UDim2.fromOffset(292, 20), UDim2.fromOffset(100, 29),
+        C.Button, C.ButtonHover, function()
+            config.WebhookUrl = normalBox.Text or ""
+            scheduleConfigSave("일반 Webhook 테스트 전 설정")
+            local ok, msg = sendWebhookPayload({
+                username = "Military Tycoon 거래소 스캐너",
+                allowed_mentions = {parse = {}},
+                embeds = {{
+                    title = "✅ 일반 Webhook 연결 테스트",
+                    color = 3066993,
+                    description = "선택 장비: **" .. tostring(selectedCount()) .. "개**",
+                }},
+            })
+            addLog(ok and "SUCCESS" or "ERROR", ok and "일반 Webhook 테스트 성공" or tostring(msg))
+        end
+    )
+    normalTest.ZIndex = 84
+
+    local urgentBox = settingBox(config.UrgentWebhookUrl, "긴급 Discord Webhook URL", 8, 73, 278)
+    settingLabel("긴급 Discord Webhook", 55, 220)
+    urgentBox:GetPropertyChangedSignal("Text"):Connect(function()
+        config.UrgentWebhookUrl = urgentBox.Text or ""
+        scheduleConfigSave("긴급 Webhook 변경")
+    end)
+    local urgentTest = flatButton(
+        scroll, "긴급 테스트", UDim2.fromOffset(292, 73), UDim2.fromOffset(100, 29),
+        Color3.fromRGB(110, 42, 47), Color3.fromRGB(135, 51, 58), function()
+            config.UrgentWebhookUrl = urgentBox.Text or ""
+            scheduleConfigSave("긴급 Webhook 테스트 전 설정")
+            local ok, msg = sendUrgentWebhookPayload({
+                username = "Military Tycoon 거래소 스캐너",
+                allowed_mentions = {parse = {}},
+                embeds = {{
+                    title = "🚨 긴급 Webhook 연결 테스트",
+                    color = 15158332,
+                    description = "이 테스트는 FindItem을 호출하지 않습니다.",
+                }},
+            })
+            addLog(ok and "SUCCESS" or "ERROR", ok and "긴급 Webhook 테스트 성공" or tostring(msg))
+        end
+    )
+    urgentTest.ZIndex = 84
+
+    settingLabel("전역 긴급가", 111, 92)
+    local globalPriceBox = settingBox(comma(config.UrgentPrice), "350,000", 100, 106, 92)
+    globalPriceBox.TextXAlignment = Enum.TextXAlignment.Center
+    local function syncGlobalPrice()
+        local n = tonumber((globalPriceBox.Text or ""):gsub(",", ""))
+        if n then
+            config.UrgentPrice = math.max(0, math.floor(n))
+            scheduleConfigSave("전역 긴급 가격 변경")
+        end
+    end
+    globalPriceBox:GetPropertyChangedSignal("Text"):Connect(syncGlobalPrice)
+    globalPriceBox.FocusLost:Connect(function()
+        syncGlobalPrice()
+        globalPriceBox.Text = comma(config.UrgentPrice)
+    end)
+
+    local stockLabel = settingLabel("재고 알림(분)", 111, 102)
+    stockLabel.Position = UDim2.fromOffset(212, 111)
+    local stockBox = settingBox(tostring(config.StockReminderMinutes), "30", 300, 106, 92)
+    stockBox.TextXAlignment = Enum.TextXAlignment.Center
+    local function syncStockMinutes()
+        local n = tonumber((stockBox.Text or ""):gsub(",", ""))
+        if n then
+            config.StockReminderMinutes = math.max(0, math.floor(n))
+            scheduleConfigSave("재고 유지 알림 간격 변경")
+        end
+    end
+    stockBox:GetPropertyChangedSignal("Text"):Connect(syncStockMinutes)
+    stockBox.FocusLost:Connect(function()
+        syncStockMinutes()
+        stockBox.Text = tostring(config.StockReminderMinutes)
+    end)
+
+    local function makeToggle(labelText, x, y, initial, onChanged)
+        settingLabel(labelText, y + 5, 112).Position = UDim2.fromOffset(x, y + 5)
+        local enabled = initial
+        local button
+        local function paint()
+            button.Text = enabled and "ON" or "OFF"
+            button.BackgroundColor3 = enabled and C.AccentSoft or C.Button
+        end
+        button = flatButton(
+            scroll, enabled and "ON" or "OFF",
+            UDim2.fromOffset(x + 112, y), UDim2.fromOffset(68, 28),
+            enabled and C.AccentSoft or C.Button, C.ButtonHover,
+            function()
+                enabled = not enabled
+                onChanged(enabled)
+                paint()
+            end
+        )
+        button.ZIndex = 84
+        button.MouseLeave:Connect(paint)
+    end
+
+    makeToggle("상세 조회 로그", 8, 148, config.DetailedLogs ~= false, function(value)
+        config.DetailedLogs = value
+        scheduleConfigSave("상세 조회 로그 변경")
+    end)
+    makeToggle("저사양 모드", 212, 148, config.LowResourceMode ~= false, function(value)
+        config.LowResourceMode = value
+        applyLowResourceMode(value)
+        scheduleConfigSave("저사양
