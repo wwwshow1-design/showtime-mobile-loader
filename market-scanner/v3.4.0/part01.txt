@@ -1,0 +1,545 @@
+--[[
+Military Tycoon 선택형 거래소 스캐너 V3.4.0 - 24시간 운영 통합
+계정: Onyyxten2020
+
+핵심:
+- TerminalCatalog에서 확인된 장비형 항목 665개 내장
+  (갑옷 18 / 드론 8 / 군인 62 / 무기·장비 79 / 차량 498)
+- 한글 카테고리 탭 + 검색 + 페이지형 선택 버튼
+- 선택한 장비만 조회
+- 군인/드론: 0성,1성,2성,3성 개별 조회
+- 차량/무기/갑옷: 성급 미지정(nil) 1회 조회
+- 선택 목록/웹훅/긴급가격 JSON 저장
+- 가격과 관계없이 새 매물 알림
+- 긴급가 이하: 빨간 Discord Embed / 그 외: 초록 Embed
+- 같은 아이템+성급+가격+JobId 반복 알림 방지
+- 서버 직행 링크 포함
+- 판매자명은 FindItem 반환값에 없어서 추측하지 않음
+- 자동구매 없음 / 잘못된 Place에서 거래소로만 1회 이동 요청
+- 620x450 기준 UI 배치/크기 유지, 글자 크기만 가독성 개선
+- FindItem은 표시 Name 우선, 정상 MISS이면서 ID가 다를 때만 ID fallback
+- 재실행 단일화 / observer 원복 / seen 제한 / Cooldown 고정 대기 / End·X cleanup
+- 모든 스캐너 FindItem 호출 사이 최소 1초 / 설정 0.4초 debounce 자동 저장
+- 저사양 조사 모드(기본 ON, 3D 렌더링 OFF) / AFK 유지 / 자동 시작
+- 일반·긴급 Webhook / 장비별 성급·긴급가·스캔 순서 / 재고 유지 확인
+- 일반 서버에서는 거래소 Place로 1회 이동 요청 후 즉시 종료
+
+주의:
+FindItem은 한 조건당 결과 1건만 반환하는 것으로 확인됨.
+따라서 이 스캐너는 '게임 터미널이 현재 골라주는 검색 결과'를 감시하며,
+전체 판매목록을 100% 열거한다고 보장하지 않음.
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local TeleportService = game:GetService("TeleportService")
+
+local ACCOUNT = "Onyyxten2020"
+local TRADE_PLACE_ID = 134708228958679
+local CONFIG_FILE = "MarketSelectedScanner_Onyyxten2020_config.json"
+
+local QUERY_INTERVAL = 1.0
+local CYCLE_PAUSE = 3.0
+local COOLDOWN_BACKOFF = 2.0
+local ERROR_BACKOFF = 3.0
+local CONFIG_SAVE_DEBOUNCE = 0.4
+local LOW_RESOURCE_FPS = 15
+local SERVICE_TIMEOUT = 30
+local ITEMS_PER_PAGE = 9
+local SEEN_LIMIT = 500
+local SEEN_TTL = 24 * 60 * 60
+local DEFAULT_STOCK_REMINDER_MINUTES = 30
+local HEALTH_FAILURE_THRESHOLD = 5
+local HEALTH_FAILURE_DURATION = 60
+local HEALTH_ALERT_COOLDOWN = 30 * 60
+
+-- 계정/Place 라우팅은 GUI, TerminalService, observer보다 먼저 끝낸다.
+local player = Players.LocalPlayer
+if not player then
+    local playerDeadline = os.clock() + 30
+    repeat
+        task.wait(0.1)
+        player = Players.LocalPlayer
+    until player or os.clock() >= playerDeadline
+end
+if not player or string.lower(player.Name) ~= string.lower(ACCOUNT) then
+    return
+end
+
+local GLOBAL_CONTROLLER_KEY = "__MarketSelectedScannerController"
+local ROUTE_ATTEMPT_KEY = "__MarketSelectedScannerRouteAttempt"
+local sharedEnvironment = _G
+if type(getgenv) == "function" then
+    local okEnvironment, environment = pcall(getgenv)
+    if okEnvironment and type(environment) == "table" then
+        sharedEnvironment = environment
+    end
+end
+
+if game.PlaceId ~= TRADE_PLACE_ID then
+    local oldController = sharedEnvironment[GLOBAL_CONTROLLER_KEY]
+    if type(oldController) == "table" and type(oldController.Cleanup) == "function" then
+        pcall(oldController.Cleanup, "wrong-place")
+    end
+
+    local routeToken = tostring(game.JobId or "") .. "|" .. tostring(game.PlaceId)
+    warn("[ROUTE] 일반 서버 감지 | PlaceId=" .. tostring(game.PlaceId))
+    if sharedEnvironment[ROUTE_ATTEMPT_KEY] ~= routeToken then
+        sharedEnvironment[ROUTE_ATTEMPT_KEY] = routeToken
+        warn("[ROUTE] 거래소 서버로 이동 요청 | PlaceId=" .. tostring(TRADE_PLACE_ID))
+        local okTeleport, teleportErr = pcall(function()
+            TeleportService:Teleport(TRADE_PLACE_ID, player)
+        end)
+        if not okTeleport then
+            warn("[ROUTE] 거래소 이동 실패 | " .. tostring(teleportErr))
+        end
+    else
+        warn("[ROUTE] 이 서버에서 이미 이동을 요청했습니다. 추가 요청하지 않습니다.")
+    end
+    return
+end
+sharedEnvironment[ROUTE_ATTEMPT_KEY] = nil
+
+local CLASS_LABELS = {
+    All = "전체",
+    Soldier = "군인",
+    Drone = "드론",
+    Air = "공중",
+    Ground = "지상",
+    Naval = "해군",
+    Tool = "무기",
+    Armor = "갑옷",
+}
+
+local CLASS_ORDER = {"All","Air","Ground","Naval","Drone","Soldier","Tool","Armor"}
+
+local function containsAny(s, words)
+    s = string.lower(tostring(s or ""))
+    for _, w in ipairs(words) do
+        if string.find(s, string.lower(w), 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+local function classifyVehicle(item)
+    local s = string.lower(tostring(item.name or "") .. " " .. tostring(item.id or ""))
+
+    -- 해상 장비 우선 판별
+    local navalWords = {
+        "submarine","sub ","destroyer","battleship","warship","frigate","cruiser",
+        "missouri","bismarck","yacht","boat","ship","naval","dinghy","corvette",
+        "uav carrier","aircraft carrier","super carrier","carrier ship","hovercraft",
+        "patrol boat","gunboat","jetski","jet ski","sea","ocean","amphibious assault"
+    }
+    if containsAny(s, navalWords) then
+        -- Air Carrier는 공중 장비
+        if not containsAny(s, {"air carrier"}) then
+            return "Naval"
+        end
+    end
+
+    -- 항공기 / 헬기 / 공중 장비
+    local airWords = {
+        "jet","plane","fighter","bomber","helicopter","heli","apache","black hawk",
+        "chinook","osprey","hind","little bird","cobra","havoc","ka-","mi-","uh-",
+        "f14","f-14","f15","f-15","f16","f-16","f18","f-18","f22","f-22","f35","f-35",
+        "a10","a-10","a37","a-37","a50","a-50","ac119","ac-119","ac130","ac-130",
+        "b1","b-1","b2","b-2","b52","b-52","c130","c-130","su-","mig","rafale",
+        "eurofighter","typhoon","gripen","mirage","tornado","vulcan","spitfire",
+        "mustang","flying","air carrier","ahrla","awacs","beriev","antonov","drone plane"
+    }
+    if containsAny(s, airWords) then
+        return "Air"
+    end
+
+    return "Ground"
+end
+
+-- 자주 찾는 장비와 일반 군사 명칭은 정확 사전에서 먼저 확정한다.
+-- 모델명·고유명사는 그대로 두고, 의미가 분명한 보통명사만 번역한다.
+local KOREAN_EXACT = {
+    -- Armor
+    ["Blast Armor"] = "폭발 방호 아머",
+    ["Boss Armor"] = "보스 아머",
+    ["Creator Armor"] = "크리에이터 아머",
+    ["Diving Suit"] = "잠수복",
+    ["Elite Armor"] = "엘리트 아머",
+    ["Exo Armor"] = "엑소 아머",
+    ["Gas Armor"] = "가스 방호 아머",
+    ["Heavy Armor"] = "헤비 아머",
+    ["JetpackArmor"] = "제트팩 아머",
+    ["Light Vest"] = "라이트 베스트",
+    ["Medium Armor"] = "미디엄 아머",
+    ["Medium Vest"] = "미디엄 베스트",
+    ["Nuke Armor"] = "핵 방호 아머",
+    ["Skull Armor"] = "스컬 아머",
+    ["Stealth Armor"] = "스텔스 아머",
+    ["Super Dive Suit"] = "슈퍼 잠수복",
+
+    -- Drone
+    ["Attack Drone"] = "공격 드론",
+    ["LE_HealingDrone"] = "LE 힐링 드론",
+    ["LE_MinigunDrone"] = "LE 미니건 드론",
+    ["LE_ReaperDrone"] = "LE 리퍼 드론",
+    ["LE_StalkerDrone"] = "LE 스토커 드론",
+    ["Missile Drone"] = "미사일 드론",
+    ["Repair Drone"] = "수리 드론",
+    ["Super Repair Drone"] = "슈퍼 수리 드론",
+
+    -- Soldier
+    ["AA Soldier"] = "대공 병사",
+    ["Ace Pilot"] = "에이스 파일럿",
+    ["Air Commander"] = "공군 사령관",
+    ["Alien"] = "에일리언",
+    ["Assassin"] = "암살자",
+    ["Black Hawk Trooper"] = "블랙 호크 대원",
+    ["Boss Killer"] = "보스 킬러",
+    ["Boss Reaper"] = "보스 리퍼",
+    ["China Soldier"] = "중국 병사",
+    ["Commander X"] = "커맨더 X",
+    ["Drill Worker"] = "드릴 작업자",
+    ["Elite"] = "엘리트",
+    ["Elite Grenadier"] = "엘리트 척탄병",
+    ["Elite Hacker"] = "엘리트 해커",
+    ["Enraged Vampire"] = "격노한 뱀파이어",
+    ["Enraged Werewolf"] = "격노한 늑대인간",
+    ["Golden Soldier"] = "골든 병사",
+    ["Grenade Bunny"] = "수류탄 버니",
+    ["Grenadier"] = "척탄병",
+    ["Grumpy Killer"] = "그럼피 킬러",
+    ["Hacker"] = "해커",
+    ["Heavy"] = "헤비",
+    ["Heavy Zombie"] = "헤비 좀비",
+    ["Jet Engineer"] = "제트 엔지니어",
+    ["Jetpack Fighter"] = "제트팩 파이터",
+    ["Juggernaut"] = "저거너트",
+    ["Marine"] = "해병",
+    ["Medic"] = "의무병",
+    ["Naval Officer"] = "해군 장교",
+    ["Noscope Bunny"] = "노스코프 버니",
+    ["Nuke Sniper"] = "핵 스나이퍼",
+    ["Private"] = "이등병",
+    ["Puckmonster"] = "퍽몬스터",
+    ["Pumpkin"] = "펌킨",
+    ["Pyro"] = "파이로",
+    ["Raid Soldier"] = "레이드 병사",
+    ["Railgun Killer"] = "레일건 킬러",
+    ["Ravage"] = "라비지",
+    ["RPG Soldier"] = "RPG 병사",
+    ["RPG Zombie"] = "RPG 좀비",
+    ["Russia Soldier"] = "러시아 병사",
+    ["Santa Assassin"] = "산타 암살자",
+    ["Santa Killer"] = "산타 킬러",
+    ["Santa Medic"] = "산타 의무병",
+    ["Santa Private"] = "산타 이등병",
+    ["Shock Trooper"] = "쇼크 트루퍼",
+    ["Slash Bunny"] = "슬래시 버니",
+    ["Sniper"] = "스나이퍼",
+    ["Super Ace Pilot"] = "슈퍼 에이스 파일럿",
+    ["Super Alien"] = "슈퍼 에일리언",
+    ["Super Pumpkin"] = "슈퍼 펌킨",
+    ["Super Sniper"] = "슈퍼 스나이퍼",
+    ["TheIceZombieSlayer"] = "아이스 좀비 슬레이어",
+    ["Toxic Trooper"] = "톡식 트루퍼",
+    ["TV Juggernaut"] = "TV 저거너트",
+    ["TV Soldier"] = "TV 병사",
+    ["Vampire"] = "뱀파이어",
+    ["Vault Raider"] = "볼트 레이더",
+    ["War Bunny"] = "워 버니",
+    ["Warlord Bunny"] = "워로드 버니",
+    ["Werewolf"] = "늑대인간",
+    ["Zombie Juggernaut"] = "좀비 저거너트",
+
+    -- Tool
+    ["Anti-Air Turret"] = "대공 포탑",
+    ["Anti-Vehicle Rifle"] = "대차량 소총",
+    ["Assassin Sniper"] = "암살자 스나이퍼",
+    ["Bird UAV"] = "버드 UAV",
+    ["Bomb UAV"] = "폭탄 UAV",
+    ["Dog Mech"] = "도그 메카",
+    ["Egg Launcher"] = "에그 런처",
+    ["EMP Bomb"] = "EMP 폭탄",
+    ["EMP Grenade"] = "EMP 수류탄",
+    ["Explosive Sniper"] = "폭발탄 스나이퍼",
+    ["Fireworks RPG"] = "불꽃놀이 RPG",
+    ["FirstAid"] = "응급 처치",
+    ["Flamethrower"] = "화염방사기",
+    ["Flare Gun"] = "신호탄 권총",
+    ["Gas Grenade"] = "가스 수류탄",
+    ["Grenade"] = "수류탄",
+    ["Grenade Launcher"] = "유탄 발사기",
+    ["Gun UAV"] = "건 UAV",
+    ["Hammerhead"] = "해머헤드",
+    ["HeatKnife"] = "히트 나이프",
+    ["Heavy Dog Mech"] = "헤비 도그 메카",
+    ["Katana"] = "카타나",
+    ["Knife"] = "나이프",
+    ["Land Mines"] = "지뢰",
+    ["Machete"] = "마체테",
+    ["Medkit"] = "구급상자",
+    ["Mortar"] = "박격포",
+    ["Nuke Launcher"] = "핵 발사기",
+    ["Nuke RC"] = "핵 RC",
+    ["Nuke RPG"] = "핵 RPG",
+    ["NVG"] = "야간투시경",
+    ["Parachute"] = "낙하산",
+    ["Phoenix Shotgun"] = "피닉스 산탄총",
+    ["PortableNuke"] = "휴대용 핵폭탄",
+    ["PresentLauncher"] = "선물 발사기",
+    ["Quad Shock RPG"] = "쿼드 쇼크 RPG",
+    ["Railgun"] = "레일건",
+    ["RepairTool"] = "수리 도구",
+    ["Revive"] = "부활",
+    ["RIOT Shield"] = "진압 방패",
+    ["Road Spikes"] = "로드 스파이크",
+    ["Santa Minigun"] = "산타 미니건",
+    ["Sawed Off"] = "소드오프 샷건",
+    ["Scout"] = "스카우트",
+    ["Scythe"] = "낫",
+    ["Seacraft DPC"] = "시크래프트 DPC",
+    ["Sentry"] = "센트리",
+    ["Smoke Grenade"] = "연막 수류탄",
+    ["Snowball SMG"] = "눈덩이 SMG",
+    ["SnowGrenade"] = "눈 수류탄",
+    ["Tactical UAV"] = "전술 UAV",
+    ["Taser"] = "테이저",
+    ["Toxic Bomb"] = "독성 폭탄",
+    ["Vehicle Repair"] = "차량 수리",
+
+    -- Vehicle: 일반명과 사용자 확인 대상 위주
+    ["24k Golden Tank"] = "24K 골든 탱크",
+    ["AATank"] = "대공 탱크",
+    ["AAV"] = "상륙돌격장갑차",
+    ["Abram Tank"] = "에이브람 탱크",
+    ["Abram X"] = "에이브람 X",
+    ["Air Carrier"] = "에어 캐리어",
+    ["Anti Nuke Jeep"] = "핵 방호 지프",
+    ["APC"] = "장갑차",
+    ["Armed HoverBike"] = "무장 호버바이크",
+    ["Armored Corvette"] = "장갑 코르벳함",
+    ["Armored Jeep"] = "장갑 지프",
+    ["Armored Snowmobile"] = "장갑 스노모빌",
+    ["Armored Vehicle"] = "장갑 차량",
+    ["ArmoredAPC"] = "장갑 APC",
+    ["Artillery"] = "자주포",
+    ["Attack Helicopter"] = "공격 헬리콥터",
+    ["Attack Submarine"] = "공격 잠수함",
+    ["Battle Tank"] = "전투 탱크",
+    ["Battle Yacht"] = "전투 요트",
+    ["Battlecruiser"] = "순양전함",
+    ["Battleship"] = "전함",
+    ["Beam Tank"] = "빔 탱크",
+    ["Biplane"] = "복엽기",
+    ["Blackbird"] = "블랙버드",
+    ["Blackhawk"] = "블랙호크",
+    ["Boat"] = "보트",
+    ["Bomber"] = "폭격기",
+    ["Bradley"] = "브래들리",
+    ["Carrier"] = "캐리어",
+    ["Chinook"] = "치누크",
+    ["Chinook CH47"] = "치누크 CH47",
+    ["Comanche"] = "코만치",
+    ["Darkstar"] = "다크스타",
+    ["Demolisher"] = "데몰리셔",
+    ["Destroyer"] = "구축함",
+    ["Dive Bomber"] = "급강하 폭격기",
+    ["Drone Carrier"] = "드론 캐리어",
+    ["Dune Buggy"] = "듄 버기",
+    ["Fighter Biplane"] = "전투 복엽기",
+    ["Fighter Jet"] = "전투기",
+    ["Flak Halftrack"] = "대공 하프트랙",
+    ["Gun Boat"] = "건보트",
+    ["Halftrack"] = "하프트랙",
+    ["Harrier"] = "해리어",
+    ["Helicopter"] = "헬리콥터",
+    ["Hovercraft"] = "호버크래프트",
+    ["Humvee"] = "험비",
+    ["Interceptor"] = "요격기",
+    ["Jeep"] = "지프",
+    ["JetSki"] = "제트스키",
+    ["Laser Truck"] = "레이저 트럭",
+    ["Mech Transport"] = "메카 수송차",
+    ["Mech Transport X"] = "메카 수송차 X",
+    ["Mech Walker"] = "보행 메카",
+    ["Medic Helicopter"] = "의무 헬리콥터",
+    ["Medic Truck"] = "의무 트럭",
+    ["Missile Boat"] = "미사일 보트",
+    ["Missile Truck"] = "미사일 트럭",
+    ["MLRS"] = "다연장로켓",
+    ["Mortar Truck"] = "박격포 트럭",
+    ["Mothership"] = "모선",
+    ["Motorbike"] = "오토바이",
+    ["Nimitz"] = "니미츠",
+    ["Patriot Boat"] = "패트리엇 보트",
+    ["Patriot truck"] = "패트리엇 트럭",
+    ["Police Heli"] = "경찰 헬리콥터",
+    ["Police Jeep"] = "경찰 지프",
+    ["Railgun Car"] = "레일건 차량",
+    ["Railgun Destroyer"] = "레일건 구축함",
+    ["Railgun Tank"] = "레일건 탱크",
+    ["Recon Destroyer"] = "정찰 구축함",
+    ["Recon Heli"] = "정찰 헬리콥터",
+    ["Rocket Tank"] = "로켓 탱크",
+    ["Rocket Truck"] = "로켓 트럭",
+    ["Sea Tank"] = "해상 탱크",
+    ["Shopping Cart"] = "쇼핑 카트",
+    ["Snowmobile"] = "스노모빌",
+    ["Stealth Boat"] = "스텔스 보트",
+    ["Submarine"] = "잠수함",
+    ["Super Air Carrier"] = "슈퍼 에어 캐리어",
+    ["Super Missouri"] = "슈퍼 미주리",
+    ["Super Yamato"] = "슈퍼 야마토",
+    ["Tank"] = "탱크",
+    ["Tank Boat"] = "탱크 보트",
+    ["Tesla Tank"] = "테슬라 탱크",
+    ["Tiger Tank"] = "타이거 탱크",
+    ["Truck"] = "트럭",
+    ["Turret Chinook"] = "포탑 치누크",
+    ["Turret Helicopter"] = "포탑 헬리콥터",
+    ["Turret Truck"] = "포탑 트럭",
+    ["UAV Carrier"] = "UAV 캐리어",
+    ["USS Missouri"] = "USS 미주리",
+    ["War ship"] = "전투함",
+    ["Warplane"] = "군용기",
+    ["Yamato"] = "야마토",
+    ["Zubr"] = "주브르",
+    ["Zumwalt"] = "줌왈트",
+    ["Zumwalt X"] = "줌왈트 X",
+}
+
+local KOREAN_PHRASE_RULES = {
+    {"Anti Nuke", "핵 방호"},
+    {"Anti-Nuke", "핵 방호"},
+    {"Anti-Air", "대공"},
+    {"Anti-Vehicle", "대차량"},
+    {"Air Carrier", "에어 캐리어"},
+    {"Air Commander", "공군 사령관"},
+    {"Dive Bomber", "급강하 폭격기"},
+    {"Fighter Jet", "전투기"},
+    {"Gun Boat", "건보트"},
+    {"War ship", "전투함"},
+}
+
+local KOREAN_WORD_RULES = {
+    {"Advanced", "어드밴스드"},
+    {"Armored", "장갑"},
+    {"Artillery", "자주포"},
+    {"Assassin", "암살자"},
+    {"Battleship", "전함"},
+    {"Battle", "전투"},
+    {"Bomber", "폭격기"},
+    {"Bomb", "폭탄"},
+    {"Buggy", "버기"},
+    {"Carrier", "캐리어"},
+    {"Cannon", "캐논"},
+    {"Destroyer", "구축함"},
+    {"Drone", "드론"},
+    {"Engineer", "엔지니어"},
+    {"Elite", "엘리트"},
+    {"Fighter", "파이터"},
+    {"Frigate", "호위함"},
+    {"Gas", "가스"},
+    {"Golden", "골든"},
+    {"Gold", "골드"},
+    {"Grenade", "수류탄"},
+    {"Gun", "건"},
+    {"Heavy", "헤비"},
+    {"Helicopter", "헬리콥터"},
+    {"HoverBike", "호버바이크"},
+    {"Hovercraft", "호버크래프트"},
+    {"Jeep", "지프"},
+    {"Jet", "제트"},
+    {"Killer", "킬러"},
+    {"Laser", "레이저"},
+    {"Launcher", "발사기"},
+    {"Light", "라이트"},
+    {"Mech", "메카"},
+    {"Medic", "의무병"},
+    {"Medium", "미디엄"},
+    {"Mines", "지뢰"},
+    {"Missile", "미사일"},
+    {"Mortar", "박격포"},
+    {"Naval", "해군"},
+    {"Nuke", "핵"},
+    {"Officer", "장교"},
+    {"Police", "경찰"},
+    {"Portable", "휴대용"},
+    {"Private", "이등병"},
+    {"Railgun", "레일건"},
+    {"Recon", "정찰"},
+    {"Repair", "수리"},
+    {"Rifle", "소총"},
+    {"Rocket", "로켓"},
+    {"Sea", "해상"},
+    {"Shield", "방패"},
+    {"Ship", "함선"},
+    {"Smoke", "연막"},
+    {"Sniper", "스나이퍼"},
+    {"Snowmobile", "스노모빌"},
+    {"Soldier", "병사"},
+    {"Submarine", "잠수함"},
+    {"Super", "슈퍼"},
+    {"Tactical", "전술"},
+    {"Tank", "탱크"},
+    {"Toxic", "톡식"},
+    {"Trooper", "트루퍼"},
+    {"Truck", "트럭"},
+    {"Turret", "포탑"},
+    {"Vehicle", "차량"},
+    {"Warplane", "군용기"},
+    {"Warship", "전투함"},
+    {"Yacht", "요트"},
+    {"Zombie", "좀비"},
+}
+
+local function escapeLuaPattern(text)
+    return (tostring(text):gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1"))
+end
+
+local function replaceWholeTerm(text, english, korean)
+    local pattern = "%f[%w]" .. escapeLuaPattern(english) .. "%f[^%w]"
+    return text:gsub(pattern, korean)
+end
+
+local function applyKoreanRules(text)
+    local out = tostring(text or "")
+    for _, pair in ipairs(KOREAN_PHRASE_RULES) do
+        out = replaceWholeTerm(out, pair[1], pair[2])
+    end
+    for _, pair in ipairs(KOREAN_WORD_RULES) do
+        out = replaceWholeTerm(out, pair[1], pair[2])
+    end
+    out = out:gsub("^%s+", ""):gsub("%s+$", ""):gsub("%s+", " ")
+    return out
+end
+
+local function koreanize(name, catalogKorean)
+    name = tostring(name or "")
+
+    if KOREAN_EXACT[name] then
+        return KOREAN_EXACT[name], "EXACT"
+    end
+
+    local hasCatalogKorean = type(catalogKorean) == "string"
+        and catalogKorean ~= ""
+        and catalogKorean ~= name
+    local base = hasCatalogKorean and catalogKorean or name
+    local out = applyKoreanRules(base)
+
+    if hasCatalogKorean then
+        return out, "CATALOG"
+    end
+    if out ~= name then
+        return out, "RULE"
+    end
+    return name, "ORIGINAL"
+end
+
+
+local CATALOG_JSON = [==[
+[{"key":"Armor|137","name":"Blast Armor","id":"BlastArmor","class":"Armor","ko":"폭발 방호 아머","limited":false,"rarity":"","starred":false},{"key":"Armor|41","name":"Boss Armor","id":"AntiBossArmor","class":"Armor","ko":"Boss 아머","limited":false,"rarity":"","starred":false},{"key":"Armor|313","name":"Creator Armor","id":"InfArmor2","class":"Armor","ko":"Creator 아머","limited":false,"rarity":"","starred":false},{"key":"Armor|312","name":"Creator Armor","id":"InfArmor1","class":"Armor","ko":"Creator 아머","limited":false,"rarity":"","starred":false},{"key":"Armor|314","name":"Creator Armor","id":"InfArmor3","class":"Armor","ko":"Creator 아머","limited":false,"rarity":"","starred":false},{"key":"Armor|55","name":"Diving Suit","id":"Armor6","class":"Armor","ko":"잠수복","limited":false,"rarity":"","starred":false},{"key":"Armor|405","name":"Elite Armor","id":"MarineArmor","class":"Armor","ko":"엘리트 아머","limited":false,"rarity":"","starred":false},{"key":"Armor|212","name":"Exo Armor","id":"ExoArmor","class":"Armor","ko":"엑소 아머","limited":false,"rarity":"","starred":false},{"key":"Armor|42","name":"Gas Armor","id":"AntiGasArmor","class":"Armor","ko":"가스 방호 아머","limited":false,"rarity":"","starred":false},{"key":"Armor|54","name":"Heavy Armor","id":"Armor5","class":"Armor","ko":"헤비 아머","limited":false,"rarity":"","starred":false},{"key":"Armor|328","name":"JetpackArmor","id":"JetpackArmor","class":"Armor","ko":"JetpackArmor","limited":false,"rarity":"Special","starred":false},{"key":"Armor|51","name":"Light Vest","id":"Armor2","class":"Armor","ko":"라이트 베스트","limited":false,"rarity":"","starred":false},{"key":"Armor|53","name":"Medium Armor","id":"Armor4","class":"Armor","ko":"미디엄 아머","limited":false,"rarity":"","starred":false},{"key":"Armor|52","name":"Medium Vest","id":"Armor3","class":"Armor","ko":"미디엄 베스트","limited":false,
