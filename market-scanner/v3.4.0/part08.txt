@@ -1,0 +1,621 @@
+      fpsRestoreComplete = okFpsRestore
+        fpsRestoreText = okFpsRestore
+            and ("FPS 원래 값 " .. tostring(performanceBaseline.fpsCap) .. " 복원")
+            or "FPS 원래 값 복원 실패"
+    else
+        fpsRestoreText = "FPS 원래 값 확인 불가 · 복원 생략"
+    end
+
+    local graphicsRestoreText
+    local graphicsRestoreComplete = not performanceBaseline.qualityCaptured
+    if performanceBaseline.qualityCaptured then
+        local okGraphicsRestore = pcall(function()
+            settings().Rendering.QualityLevel = performanceBaseline.qualityLevel
+        end)
+        graphicsRestoreComplete = okGraphicsRestore
+        graphicsRestoreText = okGraphicsRestore and "그래픽 원래 값 복원" or "그래픽 복원 실패"
+    else
+        graphicsRestoreText = "그래픽 원래 값 확인 불가 · 복원 생략"
+    end
+
+    local renderingRestored = pcall(function()
+        RunService:Set3dRenderingEnabled(true)
+    end)
+    local renderingRestoreText = renderingRestored
+        and "3D 렌더링 ON 복구"
+        or "3D 렌더링 복구 기능 미지원"
+
+    addLog(
+        "PERF",
+        "저사양 조사 모드 OFF | " .. fpsRestoreText
+            .. " | " .. graphicsRestoreText .. " | " .. renderingRestoreText
+    )
+
+    if fpsRestoreComplete and graphicsRestoreComplete then
+        sharedEnvironment[PERFORMANCE_BASELINE_KEY] = nil
+    end
+end
+
+
+local function stopAfkKeepAlive()
+    if lifecycle.AfkConnection then
+        pcall(function()
+            lifecycle.AfkConnection:Disconnect()
+        end)
+        lifecycle.AfkConnection = nil
+    end
+end
+
+local function applyAfkKeepAlive(enabled)
+    stopAfkKeepAlive()
+
+    if not enabled then
+        addLog("AFK", "자리비움 방지 OFF")
+        return true
+    end
+
+    local okVirtualUser, virtualUser = pcall(function()
+        return game:GetService("VirtualUser")
+    end)
+    if not okVirtualUser or not virtualUser or not player or not player.Idled then
+        addLog("AFK", "현재 환경에서 AFK 유지 기능을 사용할 수 없음")
+        return false
+    end
+
+    local okConnect, connectionOrErr = pcall(function()
+        return player.Idled:Connect(function()
+            pcall(function()
+                virtualUser:CaptureController()
+                local cameraCFrame = workspace.CurrentCamera
+                    and workspace.CurrentCamera.CFrame
+                    or CFrame.new()
+                virtualUser:Button2Down(Vector2.new(0, 0), cameraCFrame)
+                task.wait(0.1)
+                virtualUser:Button2Up(Vector2.new(0, 0), cameraCFrame)
+            end)
+        end)
+    end)
+
+    if not okConnect or not connectionOrErr then
+        addLog("AFK", "현재 환경에서 AFK 유지 기능을 사용할 수 없음")
+        return false
+    end
+
+    lifecycle.AfkConnection = connectionOrErr
+    trackConnection(connectionOrErr)
+    addLog("AFK", "자리비움 방지 ON")
+    return true
+end
+
+if configNeedsMigration then
+    scheduleConfigSave("신규 설정 기본값")
+end
+applyLowResourceMode(config.LowResourceMode ~= false)
+applyAfkKeepAlive(config.AfkKeepAlive ~= false)
+
+local function shortValue(v, maxLen)
+    maxLen = maxLen or 90
+    if v == nil then return "nil" end
+    local s = tostring(v):gsub("[\r\n\t]+", " ")
+    if #s > maxLen then
+        return s:sub(1, maxLen - 3) .. "..."
+    end
+    return s
+end
+
+local function normalizeSearchText(value)
+    local normalized = tostring(value or "")
+    normalized = normalized:gsub("^%s+", ""):gsub("%s+$", ""):gsub("%s+", " ")
+    return string.lower(normalized)
+end
+
+local function selectedStars(item)
+    if not item or not item.starred then
+        return {}
+    end
+
+    local filter = config.StarFilters[item.key]
+    if type(filter) ~= "table" then
+        return {0, 1, 2, 3}
+    end
+
+    local hasExplicitValue = false
+    local stars = {}
+    for star = 0, 3 do
+        local value = filter[tostring(star)]
+        if value == nil then
+            value = filter[star]
+        end
+        if value ~= nil then
+            hasExplicitValue = true
+        end
+        if value == true then
+            stars[#stars + 1] = star
+        end
+    end
+
+    if not hasExplicitValue then
+        return {0, 1, 2, 3}
+    end
+    return stars
+end
+
+local function ensureStarFilter(item)
+    local existing = config.StarFilters[item.key]
+    if type(existing) ~= "table" then
+        existing = { ["0"] = true, ["1"] = true, ["2"] = true, ["3"] = true }
+        config.StarFilters[item.key] = existing
+    else
+        local hasExplicitValue = false
+        for star = 0, 3 do
+            if existing[tostring(star)] ~= nil or existing[star] ~= nil then
+                hasExplicitValue = true
+                break
+            end
+        end
+        if not hasExplicitValue then
+            for star = 0, 3 do
+                existing[tostring(star)] = true
+            end
+        end
+    end
+    return existing
+end
+
+local function getUrgentPriceForItem(item)
+    local individual = tonumber(config.ItemUrgentPrices[item.key])
+    if individual then
+        return math.max(0, math.floor(individual)), true
+    end
+    return math.max(0, math.floor(tonumber(config.UrgentPrice) or 0)), false
+end
+
+local function summarizeRaw(result)
+    local resultType = typeof(result)
+
+    if resultType ~= "table" then
+        return "type=" .. tostring(resultType) .. " | value=" .. shortValue(result, 120)
+    end
+
+    local keys = {}
+    for k in pairs(result) do
+        keys[#keys + 1] = tostring(k)
+    end
+    table.sort(keys)
+
+    local keyText = #keys > 0 and table.concat(keys, ",") or "(없음)"
+    if #keyText > 160 then
+        keyText = keyText:sub(1, 157) .. "..."
+    end
+
+    return table.concat({
+        "type=table",
+        "keys=" .. keyText,
+        "Price=" .. shortValue(result.Price),
+        "JobId=" .. shortValue(result.JobId),
+        "ServerName=" .. shortValue(result.ServerName),
+        "Players=" .. shortValue(result.Players),
+        "Max=" .. shortValue(result.Max),
+        "Full=" .. shortValue(result.Full),
+        "Cooldown=" .. shortValue(result.Cooldown),
+    }, " | ")
+end
+
+local function countSelectedConditions(chosen)
+    local n = 0
+    for _, item in ipairs(chosen) do
+        n += item.starred and #selectedStars(item) or 1
+    end
+    return n
+end
+
+local function countSelectedRequestRange(chosen)
+    local minimum = 0
+    local maximum = 0
+
+    for _, item in ipairs(chosen) do
+        local conditions = item.starred and #selectedStars(item) or 1
+        minimum += conditions
+        maximum += conditions * ((item.id ~= item.name) and 2 or 1)
+    end
+
+    return minimum, maximum
+end
+
+local function sendHealthAlert(kind, message)
+    if lifecycle.Closed or state.stopRequested then
+        return false, "정상 종료 중"
+    end
+
+    local now = os.time()
+    local lastAt = tonumber(state.healthAlertAt[kind]) or 0
+    if now - lastAt < HEALTH_ALERT_COOLDOWN then
+        return false, "동일 오류 알림 대기 중"
+    end
+
+    local ok, err = sendWebhookPayload({
+        username = "Military Tycoon 거래소 스캐너",
+        allowed_mentions = {parse = {}},
+        embeds = {{
+            title = "⚠️ 스캐너 상태 이상",
+            color = 15105570,
+            description = tostring(message),
+            fields = {{
+                name = "상태",
+                value = tostring(kind),
+                inline = true,
+            }, {
+                name = "연속 ERROR/INVALID",
+                value = tostring(state.consecutiveFailures),
+                inline = true,
+            }},
+            footer = {text = "조사계정: " .. ACCOUNT .. " · " .. os.date("%Y-%m-%d %H:%M:%S")},
+        }},
+    })
+
+    if ok then
+        state.healthAlertAt[kind] = now
+        addLog("DISCORD", "스캐너 이상 상태 일반 알림 성공 | " .. tostring(kind))
+    else
+        addLog("ERROR", "스캐너 이상 상태 알림 실패 | " .. tostring(err))
+    end
+    return ok, err
+end
+
+local function markHealthyQuery()
+    state.healthyQueries += 1
+    state.consecutiveFailures = 0
+    state.failureStartedAt = nil
+end
+
+local function markUnhealthyQuery(failureKind, message)
+    if failureKind ~= "ERROR" and failureKind ~= "INVALID" then
+        return
+    end
+
+    local now = os.time()
+    state.consecutiveFailures += 1
+    state.failureStartedAt = state.failureStartedAt or now
+
+    if state.consecutiveFailures >= HEALTH_FAILURE_THRESHOLD
+        and now - state.failureStartedAt >= HEALTH_FAILURE_DURATION then
+        sendHealthAlert(
+            "REMOTE_" .. tostring(failureKind),
+            "FindItem " .. tostring(failureKind)
+                .. " 응답이 " .. tostring(state.consecutiveFailures)
+                .. "회 연속, " .. tostring(now - state.failureStartedAt)
+                .. "초 동안 지속되었습니다.\n마지막 오류: " .. tostring(message or "?")
+        )
+    end
+end
+
+local function formatStarArg(star)
+    if star == nil then
+        return "nil(성급 없음)"
+    end
+    return tostring(star)
+end
+
+local function normalizeResult(result)
+    if type(result) ~= "table" then
+        return nil, "반환 타입이 table이 아님: " .. tostring(typeof(result))
+    end
+
+    local price = tonumber(result.Price)
+    local jobId = result.JobId
+
+    if not price then
+        return nil, "Price가 없거나 숫자가 아님"
+    end
+
+    if type(jobId) ~= "string" or jobId == "" then
+        return nil, "JobId가 없거나 문자열이 아님"
+    end
+
+    return {
+        Price = price,
+        JobId = jobId,
+        ServerName = tostring(result.ServerName or "?"),
+        Players = tonumber(result.Players),
+        Max = tonumber(result.Max),
+        Full = result.Full == true,
+    }, nil
+end
+
+-- 표시 Name을 먼저 조회하고, 정상적인 MISS이면서 내부 ID가 다를 때만 1회 fallback.
+-- Remote 오류나 비어 있지 않은 비정상 table은 MISS로 간주하지 않으므로 fallback하지 않는다.
+local function findItemResult(item, star, starLabel)
+    local function waitForQueryPermit()
+        while not state.stopRequested do
+            local remaining = (tonumber(state.nextQueryAt) or 0) - os.clock()
+            if remaining <= 0 then
+                return true
+            end
+            task.wait(math.min(0.1, remaining))
+        end
+        return false
+    end
+
+    local function queryCandidate(mode, queryValue)
+        if not waitForQueryPermit() then
+            return nil, "STOPPED", "정지 요청"
+        end
+
+        detailLog(
+            "QUERY",
+            mode .. " 조회: " .. tostring(queryValue)
+                .. " | star=" .. formatStarArg(star)
+        )
+
+        state.remoteCalls += 1
+        state.scannerCallThread = coroutine.running()
+
+        local ok, resultOrErr = pcall(function()
+            return state.service:FindItem(queryValue, star, nil)
+        end)
+
+        state.scannerCallThread = nil
+        state.nextQueryAt = math.max(
+            tonumber(state.nextQueryAt) or 0,
+            os.clock() + QUERY_INTERVAL
+        )
+
+        if state.stopRequested or lifecycle.Closed then
+            return nil, "STOPPED", "정지 요청"
+        end
+
+        if not ok then
+            local remoteErr = tostring(resultOrErr)
+            state.nextQueryAt = math.max(
+                tonumber(state.nextQueryAt) or 0,
+                os.clock() + ERROR_BACKOFF
+            )
+            addLog(
+                "ERROR",
+                "FindItem 실패 | " .. tostring(item.ko)
+                    .. " | " .. tostring(starLabel)
+                    .. " | " .. mode .. "=" .. tostring(queryValue)
+                    .. " | " .. shortValue(remoteErr, 120)
+                    .. " | 다음 요청 전 " .. tostring(ERROR_BACKOFF) .. "초 고정 대기"
+            )
+            return nil, "ERROR", remoteErr
+        end
+
+        detailLog(
+            "RAW",
+            mode .. "=" .. tostring(queryValue)
+                .. " | " .. summarizeRaw(resultOrErr)
+        )
+
+        local normalized, normalizeErr = normalizeResult(resultOrErr)
+        if normalized then
+            detailLog("MATCH", mode .. " 정규화 성공 | " .. tostring(queryValue))
+            return normalized, "FOUND", nil
+        end
+
+        if type(resultOrErr) == "table" and resultOrErr.Cooldown ~= nil then
+            state.cooldownResponses += 1
+            state.nextQueryAt = math.max(
+                tonumber(state.nextQueryAt) or 0,
+                os.clock() + COOLDOWN_BACKOFF
+            )
+
+            local cooldownErr = "서버 Cooldown 응답: " .. shortValue(resultOrErr.Cooldown)
+            addLog(
+                "WARN",
+                mode .. " " .. cooldownErr
+                    .. " | ID fallback 중단"
+                    .. " | 다음 요청 전 " .. tostring(COOLDOWN_BACKOFF) .. "초 고정 대기"
+            )
+            return nil, "COOLDOWN", cooldownErr
+        end
+
+        if type(resultOrErr) == "table" and next(resultOrErr) ~= nil then
+            state.rawMismatches += 1
+            state.nextQueryAt = math.max(
+                tonumber(state.nextQueryAt) or 0,
+                os.clock() + ERROR_BACKOFF
+            )
+            addLog(
+                "RAW-WARN",
+                mode .. " 반환은 table이지만 정규화 실패 | "
+                    .. tostring(normalizeErr)
+                    .. " | " .. summarizeRaw(resultOrErr)
+                    .. " | 다음 요청 전 " .. tostring(ERROR_BACKOFF) .. "초 고정 대기"
+            )
+            return nil, "INVALID", tostring(normalizeErr)
+        end
+
+        detailLog(
+            "MISS",
+            mode .. " 결과 없음 | " .. tostring(queryValue)
+                .. " | " .. tostring(normalizeErr)
+        )
+        return nil, "MISS", nil
+    end
+
+    local result, status, err = queryCandidate("Name", item.name)
+    if result then
+        return result, item.name, "Name", nil, nil
+    end
+
+    -- 오류/비정상 반환은 정상 MISS가 아니므로 ID 재요청을 만들지 않는다.
+    if status ~= "MISS" then
+        return nil, nil, nil, err, status
+    end
+
+    if item.id ~= item.name then
+        result, status, err = queryCandidate("ID", item.id)
+        if result then
+            return result, item.id, "ID", nil, nil
+        end
+        if status ~= "MISS" then
+            return nil, nil, nil, err, status
+        end
+    end
+
+    return nil, nil, nil, nil, "MISS"
+end
+
+
+local function installFindItemObserver(service)
+    if state.findItemHookInstalled then
+        return true, "이미 설치됨"
+    end
+
+    if not service or type(service.FindItem) ~= "function" then
+        return false, "TerminalService.FindItem 함수를 찾지 못함"
+    end
+
+    local original = service.FindItem
+    local wrapper
+
+    wrapper = function(...)
+        local args = table.pack(...)
+        local callerThread = coroutine.running()
+        local scannerOwned = (callerThread == state.scannerCallThread)
+
+        if not scannerOwned and config.DetailedLogs then
+            state.observedUiCalls += 1
+            addLog(
+                "UI-CALL",
+                "게임 UI FindItem 감지 | item=" .. shortValue(args[2])
+                    .. " | star=" .. shortValue(args[3])
+                    .. " | arg4=" .. shortValue(args[4])
+            )
+        end
+
+        local returned = table.pack(original(...))
+        -- 게임 UI가 방금 호출한 경우에도 다음 스캐너 호출은 최소 1초 뒤로 미룬다.
+        -- observer가 기존 UI 호출을 지연하거나 추가 호출하는 것은 아니다.
+        state.nextQueryAt = math.max(
+            tonumber(state.nextQueryAt) or 0,
+            os.clock() + QUERY_INTERVAL
+        )
+
+        if not scannerOwned and config.DetailedLogs then
+            addLog(
+                "UI-RAW",
+                "게임 UI 반환 | " .. summarizeRaw(returned[1])
+            )
+        end
+
+        return table.unpack(returned, 1, returned.n)
+    end
+
+    local ok, assignErr = pcall(function()
+        service.FindItem = wrapper
+    end)
+
+    if not ok or service.FindItem ~= wrapper then
+        return false, "FindItem 관찰 래퍼 설치 실패: " .. tostring(assignErr)
+    end
+
+    state.originalFindItem = original
+    state.hookedFindItem = wrapper
+    state.findItemHookInstalled = true
+
+    return true, "FindItem 실호출 관찰 준비"
+end
+
+local function restoreFindItemObserver()
+    if not state.findItemHookInstalled then
+        return
+    end
+
+    if state.service
+        and state.originalFindItem
+        and state.service.FindItem == state.hookedFindItem then
+        pcall(function()
+            state.service.FindItem = state.originalFindItem
+        end)
+    end
+
+    state.findItemHookInstalled = false
+end
+
+local function cleanupScanner(reason)
+    if lifecycle.Closed then
+        return
+    end
+
+    lifecycle.Closed = true
+    state.stopRequested = true
+    state.running = false
+    state.startPending = false
+    state.serviceLoading = false
+    state.current = "종료"
+
+    flushConfigSave("종료 전 마지막 저장")
+
+    stopAfkKeepAlive()
+    restoreFindItemObserver()
+    applyLowResourceMode(false)
+
+    for _, connection in ipairs(lifecycle.Connections) do
+        pcall(function()
+            connection:Disconnect()
+        end)
+    end
+    lifecycle.Connections = {}
+
+    if reason ~= "gui-destroyed" and gui and gui.Parent then
+        pcall(function()
+            gui:Destroy()
+        end)
+    end
+
+    if sharedEnvironment[GLOBAL_CONTROLLER_KEY] == lifecycle then
+        sharedEnvironment[GLOBAL_CONTROLLER_KEY] = nil
+    end
+end
+
+lifecycle.Cleanup = cleanupScanner
+
+local function resultKey(item, starLabel, result)
+    return table.concat({
+        item.key,
+        tostring(starLabel),
+        tostring(result.Price),
+        tostring(result.JobId),
+    }, "|")
+end
+
+local function pruneSeen(now)
+    now = tonumber(now) or os.time()
+
+    while #state.seenOrder > 0 do
+        local oldest = state.seenOrder[1]
+        local record = state.seen[oldest.key]
+        local staleOrderEntry = not record or record.orderAt ~= oldest.at
+        local expired = record
+            and (now - (tonumber(record.lastSeen) or 0)) >= SEEN_TTL
+        local overLimit = #state.seenOrder > SEEN_LIMIT
+
+        if not staleOrderEntry and not expired and not overLimit then
+            break
+        end
+
+        table.remove(state.seenOrder, 1)
+        if record and record.orderAt == oldest.at and (expired or overLimit) then
+            state.seen[oldest.key] = nil
+        end
+    end
+end
+
+local function touchSeen(key, now)
+    now = tonumber(now) or os.time()
+    local record = state.seen[key]
+    local isNew = record == nil
+    if not record then
+        record = {
+            firstSeen = now,
+            lastSeen = now,
+            lastReminderAt = now,
+            generalSent = false,
+            urgentSent = false,
+        }
+        state.seen[key] = record
+    end
+
+    
