@@ -1,0 +1,7 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+market_control.db
+market_control.db-shm
+market_control.db-wal
