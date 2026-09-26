@@ -1,71 +1,86 @@
 @echo off
-chcp 65001 >nul
+setlocal
 cd /d "%~dp0"
-title 거래소 Discord 관제 V1 - 첫 설치
+title Market Scanner Discord Control - Setup
 
 echo.
 echo ========================================
-echo   거래소 Discord 관제 V1 - 첫 설치
+echo   Market Scanner Discord Control Setup
 echo ========================================
 echo.
 
 py -3.13 --version >nul 2>nul
-if %errorlevel%==0 (
-  set "PY_CMD=py -3.13"
-  goto :python_ok
-)
+if not errorlevel 1 goto use_py313
+
+py --version >nul 2>nul
+if not errorlevel 1 goto use_py
 
 python --version >nul 2>nul
-if %errorlevel%==0 (
-  set "PY_CMD=python"
-  goto :python_ok
-)
+if not errorlevel 1 goto use_python
 
-echo [오류] Python을 찾지 못했습니다.
-echo 먼저 Python 3.13 64-bit를 설치한 뒤 다시 실행하세요.
-echo 설치할 때 Add Python to PATH를 체크하세요.
+echo [ERROR] Python was not found.
+echo Install Python 3.13 64-bit and enable Add Python to PATH.
 pause
 exit /b 1
 
-:python_ok
-echo [1/4] Python 확인 완료
-%PY_CMD% --version
+:use_py313
+echo [1/4] Python found:
+py -3.13 --version
+echo [2/4] Creating virtual environment...
+if not exist ".venv\Scripts\python.exe" py -3.13 -m venv ".venv"
+if errorlevel 1 goto failed
+goto install_packages
 
+:use_py
+echo [1/4] Python found:
+py --version
+echo [2/4] Creating virtual environment...
+if not exist ".venv\Scripts\python.exe" py -m venv ".venv"
+if errorlevel 1 goto failed
+goto install_packages
+
+:use_python
+echo [1/4] Python found:
+python --version
+echo [2/4] Creating virtual environment...
+if not exist ".venv\Scripts\python.exe" python -m venv ".venv"
+if errorlevel 1 goto failed
+goto install_packages
+
+:install_packages
 if not exist ".venv\Scripts\python.exe" (
-  echo [2/4] 전용 가상환경 생성 중...
-  %PY_CMD% -m venv .venv
-  if errorlevel 1 goto :failed
-) else (
-  echo [2/4] 기존 가상환경 사용
+  echo [ERROR] Virtual environment was not created.
+  goto failed
 )
 
-echo [3/4] 필요한 패키지 설치 중...
-call ".venv\Scripts\python.exe" -m pip install --upgrade pip
-call ".venv\Scripts\python.exe" -m pip install -r requirements.txt
-if errorlevel 1 goto :failed
+echo [3/4] Installing required packages...
+".venv\Scripts\python.exe" -m pip install --upgrade pip
+if errorlevel 1 goto failed
+".venv\Scripts\python.exe" -m pip install -r "requirements.txt"
+if errorlevel 1 goto failed
 
-if not exist ".env" (
-  copy /Y ".env.example" ".env" >nul
-  echo [4/4] .env 파일 생성 완료
-) else (
-  echo [4/4] 기존 .env 파일 유지
-)
+echo [4/4] Preparing .env...
+if not exist ".env" copy /Y ".env.example" ".env" >nul
 
 echo.
 echo ========================================
-echo 설치 완료
+echo   SETUP COMPLETE
 echo ========================================
-echo 다음 단계:
-echo 1. 이 폴더의 .env 파일을 메모장으로 엽니다.
-echo 2. Discord Bot Token / 서버 ID / 사용자 ID를 입력합니다.
-echo 3. run_bot.bat을 실행합니다.
+echo Open the .env file with Notepad and enter:
+echo - DISCORD_BOT_TOKEN
+echo - DISCORD_GUILD_ID
+echo - DISCORD_USER_IDS
+echo - AGENT_TOKEN
 echo.
 pause
 exit /b 0
 
 :failed
 echo.
-echo [실패] 설치 중 오류가 발생했습니다.
-echo 이 창을 닫지 말고 오류 화면을 확인하세요.
+echo ========================================
+echo   SETUP FAILED
+echo ========================================
+echo Please keep this window open and take a screenshot.
+echo.
 pause
 exit /b 1
