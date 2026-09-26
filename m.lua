@@ -2,10 +2,11 @@ local Players=game:GetService("Players")
 local TeleportService=game:GetService("TeleportService")
 local ProximityPromptService=game:GetService("ProximityPromptService")
 local TRADE_PLACE_ID=134708228958679
-local SELF_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/m.lua?v=delta6"
+local SELF_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/m.lua?v=delta7"
 local BASE="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/v3.4.0/"
 local PATCH_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/patch_v341.lua"
 local PATCH342_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/patch_v342.lua"
+local REMOTE_AGENT_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/remote_agent_heartbeat_v1.lua"
 
 local player=Players.LocalPlayer
 if not player then
@@ -314,7 +315,22 @@ local okMain,mainErr=xpcall(function()
     local okRun,runErr=xpcall(fn,debug.traceback)
     if not okRun then error("본체 실행 오류: "..tostring(runErr)) end
 
-    setStatus("✅ 스캐너 실행 완료")
+    local agentCode,agentErr=httpGet(REMOTE_AGENT_URL.."?v=2")
+    if agentCode then
+        local agentChunk=loadstring(agentCode)
+        if agentChunk then
+            task.spawn(function()
+                local okAgent,runAgentErr=xpcall(agentChunk,debug.traceback)
+                if not okAgent then warn("[RemoteAgent] "..tostring(runAgentErr)) end
+            end)
+        else
+            warn("[RemoteAgent] 컴파일 실패")
+        end
+    else
+        warn("[RemoteAgent] 다운로드 실패: "..tostring(agentErr))
+    end
+
+    setStatus("✅ 스캐너 실행 완료\n📡 원격 관제 자동 시작")
     task.delay(2,function()
         if gui and gui.Parent then gui:Destroy() end
     end)
