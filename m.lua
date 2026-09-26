@@ -2,7 +2,7 @@ local Players=game:GetService("Players")
 local TeleportService=game:GetService("TeleportService")
 local ProximityPromptService=game:GetService("ProximityPromptService")
 local TRADE_PLACE_ID=134708228958679
-local SELF_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/m.lua?v=delta7"
+local SELF_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/m.lua?v=delta8"
 local BASE="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/v3.4.0/"
 local PATCH_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/patch_v341.lua"
 local PATCH342_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/patch_v342.lua"
@@ -331,8 +331,20 @@ local okMain,mainErr=xpcall(function()
     end
 
     setStatus("✅ 스캐너 실행 완료\n📡 원격 관제 자동 시작")
-    task.delay(2,function()
-        if gui and gui.Parent then gui:Destroy() end
+    task.delay(1.5,function()
+        if gui and gui.Parent and box and box.Parent then
+            box.AnchorPoint=Vector2.new(0,0)
+            box.Position=UDim2.fromOffset(12,58)
+            box.Size=UDim2.fromOffset(270,78)
+            title.Text="📡 원격 관제"
+            title.Position=UDim2.fromOffset(12,8)
+            title.Size=UDim2.new(1,-24,0,24)
+            title.TextSize=15
+            status.Position=UDim2.fromOffset(12,36)
+            status.Size=UDim2.new(1,-24,0,32)
+            status.TextSize=12
+            status.Text="🟢 실행 중\nDiscord /상태에서 연결 확인"
+        end
     end)
 end,debug.traceback)
 
