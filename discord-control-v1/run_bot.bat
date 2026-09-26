@@ -1,29 +1,29 @@
 @echo off
-chcp 65001 >nul
+setlocal
 cd /d "%~dp0"
-title 거래소 Discord 관제 V1
+title Market Scanner Discord Control
 
 if not exist ".venv\Scripts\python.exe" (
-  echo [오류] 설치가 아직 안 되어 있습니다.
-  echo setup_windows.bat을 먼저 실행하세요.
+  echo [ERROR] Setup is not complete.
+  echo Run setup_windows.bat first.
   pause
   exit /b 1
 )
 
 if not exist ".env" (
-  echo [오류] .env 파일이 없습니다.
-  echo setup_windows.bat을 먼저 실행하세요.
+  echo [ERROR] .env file was not found.
+  echo Run setup_windows.bat first.
   pause
   exit /b 1
 )
 
 echo ========================================
-echo   거래소 Discord 관제 V1 시작
+echo   Market Scanner Discord Control
 echo ========================================
-echo 창을 닫으면 관제 Bot도 종료됩니다.
+echo Close this window to stop the bot.
 echo.
-".venv\Scripts\python.exe" bot_server.py
+".venv\Scripts\python.exe" "bot_server.py"
 
 echo.
-echo Bot이 종료되었습니다.
+echo Bot stopped.
 pause
