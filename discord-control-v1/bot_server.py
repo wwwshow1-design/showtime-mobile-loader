@@ -1186,11 +1186,7 @@ async def on_ready():
     print(f"Discord bot ready: {bot.user}")
 
 
-async def setup():
-    await store.init()
-    await bootstrap_catalog()
-    await start_api()
-    bot.add_view(MainPanelView())
+async def sync_commands_after_login():
     if GUILD_ID:
         guild = discord.Object(id=GUILD_ID)
         bot.tree.copy_global_to(guild=guild)
@@ -1206,10 +1202,21 @@ async def main():
         raise RuntimeError("DISCORD_BOT_TOKEN이 비어 있습니다.")
     if not AGENT_TOKEN:
         raise RuntimeError("AGENT_TOKEN이 비어 있습니다.")
-    await setup()
+
+    await store.init()
+    await bootstrap_catalog()
+    await start_api()
+    bot.add_view(MainPanelView())
+
     try:
-        await bot.start(BOT_TOKEN)
+        # Discord.py needs to authenticate first so application_id is available
+        # before slash commands can be synchronized.
+        await bot.login(BOT_TOKEN)
+        await sync_commands_after_login()
+        await bot.connect(reconnect=True)
     finally:
+        if not bot.is_closed():
+            await bot.close()
         if api_runner:
             await api_runner.cleanup()
 
