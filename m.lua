@@ -1,8 +1,9 @@
 local Players=game:GetService("Players")
 local TeleportService=game:GetService("TeleportService")
 local ProximityPromptService=game:GetService("ProximityPromptService")
+local UserInputService=game:GetService("UserInputService")
 local TRADE_PLACE_ID=134708228958679
-local SELF_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/m.lua?v=delta8"
+local SELF_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/m.lua?v=delta9"
 local BASE="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/v3.4.0/"
 local PATCH_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/patch_v341.lua"
 local PATCH342_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/patch_v342.lua"
@@ -336,14 +337,99 @@ local okMain,mainErr=xpcall(function()
             box.AnchorPoint=Vector2.new(0,0)
             box.Position=UDim2.fromOffset(12,58)
             box.Size=UDim2.fromOffset(270,78)
+            box.Active=true
+
             title.Text="📡 원격 관제"
             title.Position=UDim2.fromOffset(12,8)
-            title.Size=UDim2.new(1,-24,0,24)
+            title.Size=UDim2.new(1,-58,0,24)
             title.TextSize=15
+            title.Active=true
+
             status.Position=UDim2.fromOffset(12,36)
             status.Size=UDim2.new(1,-24,0,32)
             status.TextSize=12
             status.Text="🟢 실행 중\nDiscord /상태에서 연결 확인"
+
+            local minimize=Instance.new("TextButton")
+            minimize.Name="RemoteMinimize"
+            minimize.Size=UDim2.fromOffset(34,28)
+            minimize.Position=UDim2.new(1,-42,0,6)
+            minimize.BackgroundColor3=Color3.fromRGB(45,50,63)
+            minimize.BorderSizePixel=0
+            minimize.Font=Enum.Font.GothamBold
+            minimize.TextSize=14
+            minimize.TextColor3=Color3.fromRGB(230,233,240)
+            minimize.Text="−"
+            minimize.Parent=box
+            Instance.new("UICorner",minimize).CornerRadius=UDim.new(0,7)
+
+            local collapsed=false
+            local function applyCollapsed()
+                if collapsed then
+                    box.Size=UDim2.fromOffset(126,40)
+                    title.Text="📡 🟢"
+                    title.Size=UDim2.new(1,-48,1,0)
+                    title.Position=UDim2.fromOffset(12,0)
+                    title.TextSize=16
+                    status.Visible=false
+                    minimize.Text="□"
+                    minimize.Position=UDim2.new(1,-38,0,6)
+                    minimize.Size=UDim2.fromOffset(30,28)
+                else
+                    box.Size=UDim2.fromOffset(270,78)
+                    title.Text="📡 원격 관제"
+                    title.Position=UDim2.fromOffset(12,8)
+                    title.Size=UDim2.new(1,-58,0,24)
+                    title.TextSize=15
+                    status.Visible=true
+                    minimize.Text="−"
+                    minimize.Position=UDim2.new(1,-42,0,6)
+                    minimize.Size=UDim2.fromOffset(34,28)
+                end
+            end
+
+            minimize.MouseButton1Click:Connect(function()
+                collapsed=not collapsed
+                applyCollapsed()
+            end)
+
+            local dragging=false
+            local dragStart=nil
+            local startPos=nil
+            local dragInput=nil
+
+            title.InputBegan:Connect(function(input)
+                if input.UserInputType==Enum.UserInputType.MouseButton1
+                    or input.UserInputType==Enum.UserInputType.Touch then
+                    dragging=true
+                    dragStart=input.Position
+                    startPos=box.Position
+                    input.Changed:Connect(function()
+                        if input.UserInputState==Enum.UserInputState.End then
+                            dragging=false
+                        end
+                    end)
+                end
+            end)
+
+            title.InputChanged:Connect(function(input)
+                if input.UserInputType==Enum.UserInputType.MouseMovement
+                    or input.UserInputType==Enum.UserInputType.Touch then
+                    dragInput=input
+                end
+            end)
+
+            UserInputService.InputChanged:Connect(function(input)
+                if dragging and input==dragInput and dragStart and startPos then
+                    local delta=input.Position-dragStart
+                    box.Position=UDim2.new(
+                        startPos.X.Scale,
+                        startPos.X.Offset+delta.X,
+                        startPos.Y.Scale,
+                        startPos.Y.Offset+delta.Y
+                    )
+                end
+            end)
         end
     end)
 end,debug.traceback)
