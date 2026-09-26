@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import time
+import re
 from collections import defaultdict
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -29,6 +30,8 @@ DB_PATH = os.getenv("DB_PATH", "market_control.db").strip()
 
 KST = ZoneInfo("Asia/Seoul")
 PAGE_SIZE = 8
+RAW_SCANNER_BASE = "https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/v3.4.0/"
+
 
 CLASS_KO = {
     "Air": "공중",
@@ -71,6 +74,58 @@ async def deny_if_needed(interaction: discord.Interaction) -> bool:
     else:
         await interaction.response.send_message("이 관제판을 사용할 권한이 없습니다.", ephemeral=True)
     return True
+
+
+def contains_any(text, words):
+    text = (text or "").lower()
+    return any(word.lower() in text for word in words)
+
+def classify_vehicle(item):
+    text = f"{item.get('name','')} {item.get('id','')}".lower()
+    naval = [
+        "submarine","sub ","destroyer","battleship","warship","frigate","cruiser",
+        "missouri","bismarck","yacht","boat","ship","naval","dinghy","corvette",
+        "uav carrier","aircraft carrier","super carrier","carrier ship","hovercraft",
+        "patrol boat","gunboat","jetski","jet ski","sea","ocean","amphibious assault",
+    ]
+    if contains_any(text, naval) and "air carrier" not in text:
+        return "Naval"
+
+    air = [
+        "jet","plane","fighter","bomber","helicopter","heli","apache","black hawk",
+        "chinook","osprey","hind","little bird","cobra","havoc","ka-","mi-","uh-",
+        "f14","f-14","f15","f-15","f16","f-16","f18","f-18","f22","f-22","f35","f-35",
+        "a10","a-10","a37","a-37","a50","a-50","ac119","ac-119","ac130","ac-130",
+        "b1","b-1","b2","b-2","b52","b-52","c130","c-130","su-","mig","rafale",
+        "eurofighter","typhoon","gripen","mirage","tornado","vulcan","spitfire",
+        "mustang","flying","air carrier","ahrla","awacs","beriev","antonov","drone plane",
+    ]
+    if contains_any(text, air):
+        return "Air"
+    return "Ground"
+
+async def bootstrap_catalog():
+    try:
+        parts = []
+        async with __import__("aiohttp").ClientSession() as session:
+            for i in range(1, 13):
+                url = RAW_SCANNER_BASE + f"part{i:02d}.txt"
+                async with session.get(url, timeout=20) as response:
+                    response.raise_for_status()
+                    parts.append(await response.text())
+        source = "".join(parts)
+        match = re.search(r"local CATALOG_JSON\s*=\s*\[==\[(.*?)\]==\]", source, re.S)
+        if not match:
+            print("Catalog bootstrap skipped: CATALOG_JSON not found")
+            return
+        items = json.loads(match.group(1))
+        for item in items:
+            if item.get("class") == "Vehicle":
+                item["class"] = classify_vehicle(item)
+        await store.replace_catalog(items)
+        print(f"Catalog loaded from scanner: {len(items)} items")
+    except Exception as exc:
+        print(f"Catalog bootstrap failed: {exc}")
 
 
 class Store:
@@ -1133,6 +1188,7 @@ async def on_ready():
 
 async def setup():
     await store.init()
+    await bootstrap_catalog()
     await start_api()
     bot.add_view(MainPanelView())
     if GUILD_ID:
