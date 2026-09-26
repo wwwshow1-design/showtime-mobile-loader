@@ -2,9 +2,10 @@ local Players=game:GetService("Players")
 local TeleportService=game:GetService("TeleportService")
 local ProximityPromptService=game:GetService("ProximityPromptService")
 local TRADE_PLACE_ID=134708228958679
-local SELF_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/m.lua?v=delta5"
+local SELF_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/m.lua?v=delta6"
 local BASE="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/v3.4.0/"
 local PATCH_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/patch_v341.lua"
+local PATCH342_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/patch_v342.lua"
 
 local player=Players.LocalPlayer
 if not player then
@@ -250,7 +251,7 @@ local okMain,mainErr=xpcall(function()
         setStatus("✅ 거래소 서버 확인\n📥 본체 다운로드 "..i.." / 12\n받은 크기: "..tostring(total).." bytes")
         local data,lastErr
         for attempt=1,3 do
-            data,lastErr=httpGet(BASE..string.format("part%02d.txt",i).."?v=delta5")
+            data,lastErr=httpGet(BASE..string.format("part%02d.txt",i).."?v=delta6")
             if data then break end
             task.wait(0.4)
         end
@@ -282,13 +283,32 @@ local okMain,mainErr=xpcall(function()
         error("V3.4.1 패치 적용 실패: "..tostring(patchErr))
     end
     source=patchedSource
+
+    setStatus("✅ V3.4.1 적용 완료\n🔧 V3.4.2 기능 패치 적용 중...")
+    local patch342Code,patch342DownloadErr=httpGet(PATCH342_URL.."?v=342")
+    if not patch342Code then
+        error("V3.4.2 패치 다운로드 실패: "..tostring(patch342DownloadErr))
+    end
+    local patch342Chunk,patch342CompileErr=loadstring(patch342Code)
+    if not patch342Chunk then
+        error("V3.4.2 패치 컴파일 오류: "..tostring(patch342CompileErr))
+    end
+    local applyPatch342=patch342Chunk()
+    if type(applyPatch342)~="function" then
+        error("V3.4.2 패치 함수 형식 오류")
+    end
+    local patched342Source,patch342Err=applyPatch342(source)
+    if not patched342Source then
+        error("V3.4.2 패치 적용 실패: "..tostring(patch342Err))
+    end
+    source=patched342Source
     source=source:gsub('local ACCOUNT = "Onyyxten2020"','local ACCOUNT = '..string.format('%q',player.Name),1)
     source=source:gsub('MarketSelectedScanner_Onyyxten2020_config%.json','MarketSelectedScanner_'..player.Name..'_config.json',1)
 
     local fn,compileErr=loadstring(source)
     if not fn then error("컴파일 오류: "..tostring(compileErr)) end
 
-    setStatus("✅ 컴파일 성공\n▶ V3.4.1 실행 중...")
+    setStatus("✅ 컴파일 성공\n▶ V3.4.2 실행 중...")
     task.wait(0.4)
 
     local okRun,runErr=xpcall(fn,debug.traceback)
