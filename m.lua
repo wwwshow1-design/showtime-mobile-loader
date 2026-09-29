@@ -3,10 +3,11 @@ local TeleportService=game:GetService("TeleportService")
 local ProximityPromptService=game:GetService("ProximityPromptService")
 local UserInputService=game:GetService("UserInputService")
 local TRADE_PLACE_ID=134708228958679
-local SELF_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/m.lua?v=delta9"
+local SELF_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/m.lua?v=delta10"
 local BASE="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/v3.4.0/"
 local PATCH_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/patch_v341.lua"
 local PATCH342_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/patch_v342.lua"
+local PATCH343_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/patch_v343.lua"
 local REMOTE_AGENT_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/remote_agent_heartbeat_v1.lua"
 
 local player=Players.LocalPlayer
@@ -304,13 +305,33 @@ local okMain,mainErr=xpcall(function()
         error("V3.4.2 패치 적용 실패: "..tostring(patch342Err))
     end
     source=patched342Source
+
+    setStatus("✅ V3.4.2 적용 완료\n🔧 V3.4.3 알림/보고서 패치 적용 중...")
+    local patch343Code,patch343DownloadErr=httpGet(PATCH343_URL.."?v=343")
+    if not patch343Code then
+        error("V3.4.3 패치 다운로드 실패: "..tostring(patch343DownloadErr))
+    end
+    local patch343Chunk,patch343CompileErr=loadstring(patch343Code)
+    if not patch343Chunk then
+        error("V3.4.3 패치 컴파일 오류: "..tostring(patch343CompileErr))
+    end
+    local applyPatch343=patch343Chunk()
+    if type(applyPatch343)~="function" then
+        error("V3.4.3 패치 함수 형식 오류")
+    end
+    local patched343Source,patch343Err=applyPatch343(source)
+    if not patched343Source then
+        error("V3.4.3 패치 적용 실패: "..tostring(patch343Err))
+    end
+    source=patched343Source
+
     source=source:gsub('local ACCOUNT = "Onyyxten2020"','local ACCOUNT = '..string.format('%q',player.Name),1)
     source=source:gsub('MarketSelectedScanner_Onyyxten2020_config%.json','MarketSelectedScanner_'..player.Name..'_config.json',1)
 
     local fn,compileErr=loadstring(source)
     if not fn then error("컴파일 오류: "..tostring(compileErr)) end
 
-    setStatus("✅ 컴파일 성공\n▶ V3.4.2 실행 중...")
+    setStatus("✅ 컴파일 성공\n▶ V3.4.3 실행 중...")
     task.wait(0.4)
 
     local okRun,runErr=xpcall(fn,debug.traceback)
