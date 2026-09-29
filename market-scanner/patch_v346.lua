@@ -225,9 +225,7 @@ local function buildAlert(item, starLabel, result, alertKind, urgentPrice, recor
         local hour12 = t.hour % 12
         if hour12 == 0 then hour12 = 12 end
         return string.format(
-            "%02d월 %02d일 %s %02d시 %02d분:%02d초",
-            t.month,
-            t.day,
+            "%s %02d시 %02d분:%02d초",
             meridiem,
             hour12,
             t.min,
