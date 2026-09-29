@@ -3,11 +3,11 @@ local TeleportService=game:GetService("TeleportService")
 local ProximityPromptService=game:GetService("ProximityPromptService")
 local UserInputService=game:GetService("UserInputService")
 local TRADE_PLACE_ID=134708228958679
-local SELF_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/m.lua?v=delta10"
+local SELF_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/m.lua?v=delta11"
 local BASE="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/v3.4.0/"
 local PATCH_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/patch_v341.lua"
 local PATCH342_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/patch_v342.lua"
-local PATCH343_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/patch_v343.lua"
+local PATCH344_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/patch_v344.lua"
 local REMOTE_AGENT_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/remote_agent_heartbeat_v1.lua"
 
 local player=Players.LocalPlayer
@@ -238,13 +238,46 @@ local okMain,mainErr=xpcall(function()
             return
         end
 
-        local activated,method=activatePrompt(prompt)
-        if not activated then error("거래소 NPC 입장 실행 실패: "..tostring(method)) end
+        -- 프롬프트 호출 성공(pcall=true)만으로 실제 거래소 이동이 보장되지는 않는다.
+        -- 최대 3회 재시도하고, fireproximityprompt 이후에도 이동이 없으면 InputHold 방식까지 보조로 시도한다.
+        local lastMethod="없음"
+        for attempt=1,3 do
+            setStatus("✅ 거래소 NPC 감지\n입장 시도 "..tostring(attempt).." / 3")
+            local activated,method=activatePrompt(prompt)
+            lastMethod=tostring(method)
+            if not activated then
+                warn("[MarketScannerDelta] 거래소 입장 시도 실패: "..lastMethod)
+            end
 
-        task.wait(1)
-        if game.PlaceId~=TRADE_PLACE_ID then
-            setStatus(status.Text.."\n\n✅ 입장 입력 전달 완료 ("..tostring(method)..")\n거래소 이동 응답 대기 중...")
+            task.wait(2.0)
+            if game.PlaceId==TRADE_PLACE_ID then
+                return
+            end
+
+            local okHold,holdErr=pcall(function()
+                moveNearPrompt(prompt)
+                prompt:InputHoldBegin()
+                task.wait(math.max(0.2,(tonumber(prompt.HoldDuration) or 0)+0.25))
+                prompt:InputHoldEnd()
+            end)
+            if okHold then
+                lastMethod="InputHold"
+            else
+                warn("[MarketScannerDelta] InputHold 보조 실패: "..tostring(holdErr))
+            end
+
+            task.wait(2.5)
+            if game.PlaceId==TRADE_PLACE_ID then
+                return
+            end
+
+            if attempt<3 then
+                local nextPrompt=findTradePrompt()
+                if nextPrompt then prompt=nextPrompt end
+            end
         end
+
+        setStatus("⚠ 거래소 입장 입력 3회 전달 완료\n마지막 방식: "..lastMethod.."\n아직 이동되지 않았습니다.\nNPC 입장 버튼을 한 번 수동으로 눌러주세요.")
         return
     end
 
@@ -306,24 +339,24 @@ local okMain,mainErr=xpcall(function()
     end
     source=patched342Source
 
-    setStatus("✅ V3.4.2 적용 완료\n🔧 V3.4.3 알림/보고서 패치 적용 중...")
-    local patch343Code,patch343DownloadErr=httpGet(PATCH343_URL.."?v=343")
-    if not patch343Code then
-        error("V3.4.3 패치 다운로드 실패: "..tostring(patch343DownloadErr))
+    setStatus("✅ V3.4.2 적용 완료\n🔧 V3.4.4 알림/보고서 패치 적용 중...")
+    local patch344Code,patch344DownloadErr=httpGet(PATCH344_URL.."?v=344fix1")
+    if not patch344Code then
+        error("V3.4.4 패치 다운로드 실패: "..tostring(patch344DownloadErr))
     end
-    local patch343Chunk,patch343CompileErr=loadstring(patch343Code)
-    if not patch343Chunk then
-        error("V3.4.3 패치 컴파일 오류: "..tostring(patch343CompileErr))
+    local patch344Chunk,patch344CompileErr=loadstring(patch344Code)
+    if not patch344Chunk then
+        error("V3.4.4 패치 컴파일 오류: "..tostring(patch344CompileErr))
     end
-    local applyPatch343=patch343Chunk()
-    if type(applyPatch343)~="function" then
-        error("V3.4.3 패치 함수 형식 오류")
+    local applyPatch344=patch344Chunk()
+    if type(applyPatch344)~="function" then
+        error("V3.4.4 패치 함수 형식 오류")
     end
-    local patched343Source,patch343Err=applyPatch343(source)
-    if not patched343Source then
-        error("V3.4.3 패치 적용 실패: "..tostring(patch343Err))
+    local patched344Source,patch344Err=applyPatch344(source)
+    if not patched344Source then
+        error("V3.4.4 패치 적용 실패: "..tostring(patch344Err))
     end
-    source=patched343Source
+    source=patched344Source
 
     source=source:gsub('local ACCOUNT = "Onyyxten2020"','local ACCOUNT = '..string.format('%q',player.Name),1)
     source=source:gsub('MarketSelectedScanner_Onyyxten2020_config%.json','MarketSelectedScanner_'..player.Name..'_config.json',1)
@@ -331,7 +364,7 @@ local okMain,mainErr=xpcall(function()
     local fn,compileErr=loadstring(source)
     if not fn then error("컴파일 오류: "..tostring(compileErr)) end
 
-    setStatus("✅ 컴파일 성공\n▶ V3.4.3 실행 중...")
+    setStatus("✅ 컴파일 성공\n▶ V3.4.4 실행 중...")
     task.wait(0.4)
 
     local okRun,runErr=xpcall(fn,debug.traceback)
