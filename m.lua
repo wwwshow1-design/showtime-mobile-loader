@@ -340,7 +340,7 @@ local okMain,mainErr=xpcall(function()
     source=patched342Source
 
     setStatus("✅ V3.4.2 적용 완료\n🔧 V3.4.6 알림/보고서 패치 적용 중...")
-    local patch346Code,patch346DownloadErr=httpGet(PATCH346_URL.."?v=346")
+    local patch346Code,patch346DownloadErr=httpGet(PATCH346_URL.."?v=346time2")
     if not patch346Code then
         error("V3.4.6 패치 다운로드 실패: "..tostring(patch346DownloadErr))
     end
