@@ -3,11 +3,11 @@ local TeleportService=game:GetService("TeleportService")
 local ProximityPromptService=game:GetService("ProximityPromptService")
 local UserInputService=game:GetService("UserInputService")
 local TRADE_PLACE_ID=134708228958679
-local SELF_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/m.lua?v=delta11"
+local SELF_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/m.lua"
 local BASE="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/v3.4.0/"
 local PATCH_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/patch_v341.lua"
 local PATCH342_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/patch_v342.lua"
-local PATCH344_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/patch_v344.lua"
+local PATCH346_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/patch_v346.lua"
 local REMOTE_AGENT_URL="https://raw.githubusercontent.com/wwwshow1-design/showtime-mobile-loader/main/market-scanner/remote_agent_heartbeat_v1.lua"
 
 local player=Players.LocalPlayer
@@ -339,24 +339,24 @@ local okMain,mainErr=xpcall(function()
     end
     source=patched342Source
 
-    setStatus("✅ V3.4.2 적용 완료\n🔧 V3.4.4 알림/보고서 패치 적용 중...")
-    local patch344Code,patch344DownloadErr=httpGet(PATCH344_URL.."?v=344fix1")
-    if not patch344Code then
-        error("V3.4.4 패치 다운로드 실패: "..tostring(patch344DownloadErr))
+    setStatus("✅ V3.4.2 적용 완료\n🔧 V3.4.6 알림/보고서 패치 적용 중...")
+    local patch346Code,patch346DownloadErr=httpGet(PATCH346_URL.."?v=346")
+    if not patch346Code then
+        error("V3.4.6 패치 다운로드 실패: "..tostring(patch346DownloadErr))
     end
-    local patch344Chunk,patch344CompileErr=loadstring(patch344Code)
-    if not patch344Chunk then
-        error("V3.4.4 패치 컴파일 오류: "..tostring(patch344CompileErr))
+    local patch346Chunk,patch346CompileErr=loadstring(patch346Code)
+    if not patch346Chunk then
+        error("V3.4.6 패치 컴파일 오류: "..tostring(patch346CompileErr))
     end
-    local applyPatch344=patch344Chunk()
-    if type(applyPatch344)~="function" then
-        error("V3.4.4 패치 함수 형식 오류")
+    local applyPatch346=patch346Chunk()
+    if type(applyPatch346)~="function" then
+        error("V3.4.6 패치 함수 형식 오류")
     end
-    local patched344Source,patch344Err=applyPatch344(source)
-    if not patched344Source then
-        error("V3.4.4 패치 적용 실패: "..tostring(patch344Err))
+    local patched346Source,patch346Err=applyPatch346(source)
+    if not patched346Source then
+        error("V3.4.6 패치 적용 실패: "..tostring(patch346Err))
     end
-    source=patched344Source
+    source=patched346Source
 
     source=source:gsub('local ACCOUNT = "Onyyxten2020"','local ACCOUNT = '..string.format('%q',player.Name),1)
     source=source:gsub('MarketSelectedScanner_Onyyxten2020_config%.json','MarketSelectedScanner_'..player.Name..'_config.json',1)
@@ -364,7 +364,7 @@ local okMain,mainErr=xpcall(function()
     local fn,compileErr=loadstring(source)
     if not fn then error("컴파일 오류: "..tostring(compileErr)) end
 
-    setStatus("✅ 컴파일 성공\n▶ V3.4.4 실행 중...")
+    setStatus("✅ 컴파일 성공\n▶ V3.4.6 실행 중...")
     task.wait(0.4)
 
     local okRun,runErr=xpcall(fn,debug.traceback)
